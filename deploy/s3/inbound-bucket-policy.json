@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::YOUR_INBOUND_BUCKET",
+        "arn:aws:s3:::YOUR_INBOUND_BUCKET/*"
+      ],
+      "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+    },
+    {
+      "Sid": "AllowSESPuts",
+      "Effect": "Allow",
+      "Principal": { "Service": "ses.amazonaws.com" },
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::YOUR_INBOUND_BUCKET/*",
+      "Condition": {
+        "StringEquals": { "aws:SourceAccount": "YOUR_ACCOUNT_ID" },
+        "StringLike": {
+          "aws:SourceArn": "arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:receipt-rule-set/YOUR_RULE_SET:receipt-rule/YOUR_RULE"
+        }
+      }
+    }
+  ]
+}

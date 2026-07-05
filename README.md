@@ -8,6 +8,11 @@ re-sends it to the destination(s) you configure. It is configured entirely by
 environment variables — no addresses, domains, or bucket names are ever written
 into the source.
 
+> **Deploying?** Follow the ordered, copy-paste runbook in
+> **[docs/DEPLOY.md](docs/DEPLOY.md)** — from a bare account to a working
+> forwarder, with ready-to-apply IAM and S3 policy files. The sections below are
+> the reference that explains *what* each piece does and *why*.
+
 ## How it works
 
 ```
@@ -46,8 +51,15 @@ its time waiting on S3 and SES.)
 
 ## Setup
 
-SES email receiving is only available in [certain AWS
-regions](https://docs.aws.amazon.com/ses/latest/dg/regions.html#region-receive-email).
+> **Two things bite first-time SES deploys and are easy to miss.** (1) Email
+> *receiving* is only available in [certain
+> regions](https://docs.aws.amazon.com/ses/latest/dg/regions.html#region-receive-email).
+> (2) A new account's SES starts in the **sandbox**, where you can send only to
+> pre-verified addresses at a low quota — so a forwarder delivers **nothing**
+> until you [request production access](https://docs.aws.amazon.com/ses/latest/dg/request-production-access.html).
+> Both are handled, in order, by the runbook in
+> [docs/DEPLOY.md](docs/DEPLOY.md).
+
 Create the S3 bucket and this Lambda in the **same region** as the SES receipt
 rule.
 
@@ -225,6 +237,16 @@ cargo llvm-cov --fail-under-lines 90 --ignore-filename-regex 'main\.rs$'
 
 ## Build and deploy
 
+> This is the quickstart for the build/deploy step only. For the **complete**
+> from-scratch procedure — S3 bucket, IAM role, SES rule wiring, and a smoke
+> test — follow **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
+Building needs the Rust stable toolchain, the `aarch64-unknown-linux-gnu`
+target, `cargo-lambda`, and `zig` (the exact pinned versions are in
+[`.github/workflows/release.yml`](.github/workflows/release.yml)). No Docker
+required. Or skip building entirely and download a release artifact (see
+[Releases](#releases)).
+
 ```sh
 # Cross-compile for the Lambda runtime (ARM64, no Docker required).
 cargo lambda build --release --arm64
@@ -232,17 +254,22 @@ cargo lambda build --release --arm64
 # Deploy (creates or updates the function).
 cargo lambda deploy \
   --enable-function-url=false \
+  --memory 512 --timeout 30 --region YOUR_REGION \
   --env-var FROM_EMAIL=relay@example.com \
   --env-var EMAIL_BUCKET=your-inbound-bucket \
   --env-var 'FORWARD_MAPPING={"@example.com":["you@example.net"]}'
 ```
 
-Alternatively, zip the produced `bootstrap` binary and upload it to a function
-you create manually.
-
 - **Runtime:** `provided.al2023` (OS-only). **Architecture:** ARM64 (Graviton).
 - **Memory:** 256–512 MB (headroom for a large message held as bytes).
 - **Timeout:** ~30 seconds.
+
+> **`cargo lambda deploy` auto-creates a minimal execution role** with only
+> CloudWatch Logs access — it will get `AccessDenied` on the first S3 read or
+> SES send. For the correct least-privilege role, the bucket/SES wiring, and the
+> resource-based invoke policy, use [docs/DEPLOY.md](docs/DEPLOY.md). You can
+> also zip the produced `bootstrap` and upload it to a function you create
+> yourself (also covered there).
 
 ## Releases
 
