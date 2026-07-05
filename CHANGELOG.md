@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Pre-release builds are tagged `v0.1.0-rc.N` and cut from this section; the first
+dated release below will be `v0.1.0`._
+
 ### Added
 
 - Rust AWS Lambda that forwards inbound SES email: reads the raw message from

@@ -28,7 +28,7 @@ each message before re-sending:
 - **`From`** is rewritten to your verified sender address, preserving the
   original display name.
 - **`Reply-To`** is set to the original `From` (unless the message already has a
-  `Reply-To`), so replies reach the real sender.
+  `Reply-To`, or the original `From` is empty), so replies reach the real sender.
 - **`Return-Path`**, **`Sender`**, **`Message-ID`**, and every
   **`DKIM-Signature`** are removed (SES sets its own; the inherited DKIM
   signatures no longer match the rewritten message).
@@ -90,10 +90,9 @@ rule.
    > **Object key.** SES stores each message at an object key equal to its
    > `messageId`, optionally under a key prefix you set on the S3 action. This
    > function derives the object key from the event's `messageId`, so **leave
-   > the S3 action's object key prefix empty**. (If the event happens to carry
-   > explicit S3-action fields — for example via an SNS-wrapped delivery — the
-   > function uses those instead, and refuses any bucket other than
-   > `EMAIL_BUCKET`.)
+   > the S3 action's object key prefix empty**. (If an event does carry explicit
+   > S3-action `bucketName`/`objectKey` fields, the function uses those instead,
+   > and refuses any bucket other than `EMAIL_BUCKET`.)
 
 ## Configuration
 
@@ -151,15 +150,23 @@ The function's execution role needs only:
 
 - **`s3:GetObject`** on the inbound objects, e.g.
   `arn:aws:s3:::YOUR_INBOUND_BUCKET/*` (scope to your key prefix if you use one).
-- **`ses:SendEmail`** on `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/*`.
-  The function uses the SESv2 `SendEmail` API with a raw message, which is
-  authorized by `ses:SendEmail` alone — `ses:SendRawEmail` is the legacy SESv1
-  action and is **not** needed.
+- **`ses:SendRawEmail`** on `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/*`.
+  The function sends via the SESv2 `SendEmail` API with a **raw** message, and at
+  runtime AWS authorizes that against **`ses:SendRawEmail`** — verified against a
+  live send. (The AWS action tables suggest `ses:SendEmail`, but only
+  `ses:SendRawEmail` actually works for a raw send; granting `ses:SendEmail`
+  alone fails with `AccessDenied` on the first message.)
 
-  > `identity/*` is a permissive resource. To tighten it, scope to your verified
-  > identity's ARN — for a **domain** identity that is
-  > `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/YOUR_DOMAIN`, which
-  > authorizes sending as any address at that domain, including `FROM_EMAIL`.
+  > `identity/*` is a permissive resource that works everywhere, **including the
+  > SES sandbox**. Once you have **production** sending access you can tighten it
+  > to your verified sender identity's ARN — for a **domain** identity that is
+  > `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/YOUR_DOMAIN` (it authorizes
+  > sending as any address at that domain, including `FROM_EMAIL`). **In the
+  > sandbox that is not enough:** SES also authorizes the send against each
+  > verified *recipient* identity, so a sender-only scope fails with
+  > `AccessDenied` naming a recipient ARN. While sandboxed, either keep
+  > `identity/*` or list the sender identity plus every verified recipient
+  > identity ARN.
 
 - **CloudWatch Logs** write (`logs:CreateLogGroup`, `logs:CreateLogStream`,
   `logs:PutLogEvents`) — covered by the AWS-managed
@@ -287,7 +294,8 @@ Pushing a `v*` tag runs the release workflow (`.github/workflows/release.yml`),
 which gates on `cargo test`, cross-compiles the ARM64 binary, packages
 `bootstrap-arm64.zip`, and attaches it (with a SHA-256 checksum) to a GitHub
 Release for that tag. Tags containing a hyphen (for example `v0.1.0-rc.1`) are
-published as pre-releases. Download the deployment package with:
+published as pre-releases. Download the deployment package (run from a clone of
+this repo so `gh` infers it, or add `--repo <owner>/aws-ses-relay`):
 
     gh release download <tag> --pattern 'bootstrap-arm64.zip'
 

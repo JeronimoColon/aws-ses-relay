@@ -19,8 +19,8 @@
       "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::YOUR_INBOUND_BUCKET/*",
       "Condition": {
-        "StringEquals": { "aws:SourceAccount": "YOUR_ACCOUNT_ID" },
-        "StringLike": {
+        "StringEquals": {
+          "aws:SourceAccount": "YOUR_ACCOUNT_ID",
           "aws:SourceArn": "arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:receipt-rule-set/YOUR_RULE_SET:receipt-rule/YOUR_RULE"
         }
       }

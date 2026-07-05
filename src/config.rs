@@ -1,8 +1,9 @@
 //! Configuration loaded entirely from environment variables.
 //!
 //! No configuration value is ever written into the source, so private data
-//! cannot leak through the code. [`Config::from_env`] validates everything and
-//! reports *all* problems at once rather than failing on the first, so an
+//! cannot leak through the code. [`Config::from_process_env`] reads the real
+//! environment and delegates to [`Config::from_env`], which validates everything
+//! and reports *all* problems at once rather than failing on the first, so an
 //! operator fixing a misconfiguration sees the complete list in one deploy.
 
 use std::collections::HashMap;

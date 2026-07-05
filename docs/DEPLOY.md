@@ -106,12 +106,19 @@ single executable named `bootstrap`, built for ARM64.
 aws sesv2 create-email-identity --email-identity YOUR_DOMAIN --region YOUR_REGION
 ```
 
-Publish the DNS records SES returns: the **DKIM** CNAMEs and an **MX** record
-pointing mail for `YOUR_DOMAIN` at SES's inbound endpoint for your region
-(`inbound-smtp.YOUR_REGION.amazonaws.com`, priority 10). The **DKIM CNAMEs are
-what verify the identity** (they also sign outbound mail), so the wait below does
-not finish until they resolve; the MX record is what routes inbound mail to SES.
-Wait for the identity to show as verified:
+`create-email-identity` returns three **DKIM tokens**, not ready-made records.
+Turn each token into a CNAME:
+
+    Name:  <token>._domainkey.YOUR_DOMAIN
+    Value: <token>.dkim.amazonses.com
+
+Also publish an **MX** record for `YOUR_DOMAIN` pointing at SES's inbound endpoint
+for your region (`inbound-smtp.YOUR_REGION.amazonaws.com`, priority 10). The DKIM
+CNAMEs are what **verify the identity** (and sign outbound mail), so the wait
+below does not finish until they resolve; the MX record routes inbound mail to
+SES. If you'd rather not build the CNAMEs by hand, the console's **"Publish DNS
+records"** view shows them ready to copy. Wait for the identity to show as
+verified:
 
 ```sh
 aws sesv2 get-email-identity --email-identity YOUR_DOMAIN --region YOUR_REGION \
@@ -225,10 +232,19 @@ it receives, so invocation must be locked to SES.
 
 ## Step 8 — Create the SES receipt rule
 
-Create (or reuse) a rule set, add the rule with an **S3 action first** then a
-**Lambda action second**, and make the rule set active. Note the empty S3 key
-prefix — the function derives the object key from the message id, so a prefix
-would break reads.
+> **On an account that already receives mail, read this first.** Only one receipt
+> rule set can be **active** per region, and `set-active-receipt-rule-set` below
+> **deactivates whatever set was active before** — silently turning off your
+> existing receiving. (`create-receipt-rule-set` also errors if a set of that
+> name already exists.) If the account already has an active set
+> (`aws ses describe-active-receipt-rule-set` shows it), **skip the create and
+> activate commands** and add just the rule to that existing set instead. The
+> commands below are for a fresh account with no active set.
+
+Create the rule set, add the rule with an **S3 action first** then a **Lambda
+action second**, and make the rule set active. Note the empty S3 key prefix — the
+function derives the object key from the message id, so a prefix would break
+reads.
 
 ```sh
 aws ses create-receipt-rule-set --rule-set-name YOUR_RULE_SET --region YOUR_REGION
@@ -255,7 +271,11 @@ aws ses set-active-receipt-rule-set --rule-set-name YOUR_RULE_SET --region YOUR_
 `ScanEnabled: true` is what makes the spam/virus verdicts meaningful; without it
 they are `DISABLED` and `DROP_SPAM`/`DROP_UNSCANNED` do nothing. `InvocationType:
 Event` is the asynchronous invoke SES uses (see the README's failure-handling
-notes). Only one rule set can be active per account per region.
+notes).
+
+If `create-receipt-rule` reports it **cannot write to the bucket**, SES's
+write-check failed against the Step 4 bucket policy: confirm its `aws:SourceArn`
+exactly matches this rule's ARN and `aws:SourceAccount` is your account id.
 
 ## Step 9 — Smoke test
 
@@ -336,8 +356,11 @@ aws s3api put-bucket-lifecycle-configuration --bucket YOUR_INBOUND_BUCKET \
 
 For an SNS on-failure topic instead of SQS, grant the role `sns:Publish` on the
 topic rather than `sqs:SendMessage`. Also consider a CloudWatch alarm on the
-function's `Errors` metric. See the README's "Scaling to high volume" and
-"Operations" sections for the reasoning behind each of these.
+function's `Errors` metric. The lifecycle rule expires **current** object
+versions; if you enable S3 **versioning** on the bucket, add a
+`NoncurrentVersionExpiration` rule too, or noncurrent copies of raw email outlive
+the expiry. See the README's "Scaling to high volume" and "Operations" sections
+for the reasoning behind each of these.
 
 ## Optional — enable duplicate suppression (idempotency)
 

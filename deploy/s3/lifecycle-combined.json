@@ -4,7 +4,8 @@
       "ID": "expire-inbound-mail",
       "Filter": { "Prefix": "" },
       "Status": "Enabled",
-      "Expiration": { "Days": 30 }
+      "Expiration": { "Days": 30 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
     },
     {
       "ID": "expire-idempotency-markers",
