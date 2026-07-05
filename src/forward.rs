@@ -196,16 +196,33 @@ fn verdict_failed(verdict: Option<&str>) -> bool {
 /// Header field names removed entirely (all occurrences) before re-sending.
 const REMOVED_FIELDS: [&str; 4] = ["return-path", "sender", "message-id", "dkim-signature"];
 
+/// The result of [`rewrite_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RewriteOutcome {
+    /// The rewritten message bytes.
+    pub message: Vec<u8>,
+    /// Whether a `From` header was found and rewritten. When false, the message
+    /// had no `From` to rewrite (e.g. it began with a blank line, so the entire
+    /// content became body), and the caller must not forward it — SES would
+    /// reject a send whose raw `From` is not the verified sender.
+    pub from_rewritten: bool,
+}
+
 /// Rewrite the raw message so SES will accept it for sending.
 ///
 /// - `From` is rewritten to `from_email`, preserving any display name.
-/// - `Reply-To` equal to the original `From` is added, unless one already exists.
+/// - `Reply-To` equal to the original `From` is added, unless one already exists
+///   or the original `From` value is blank.
 /// - `Return-Path`, `Sender`, `Message-ID`, and `DKIM-Signature` are removed.
 /// - When `subject_prefix` is set, it is prepended to the `Subject` value.
 ///
 /// The body is preserved exactly. When nothing needs to change, the output is
 /// byte-for-byte identical to the input.
-pub fn rewrite_message(raw: &[u8], from_email: &str, subject_prefix: Option<&str>) -> Vec<u8> {
+pub fn rewrite_message(
+    raw: &[u8],
+    from_email: &str,
+    subject_prefix: Option<&str>,
+) -> RewriteOutcome {
     let (header_block, separator, body) = split_message(raw);
     let line_ending = detect_line_ending(header_block);
     let fields = parse_header_fields(header_block);
@@ -244,17 +261,25 @@ pub fn rewrite_message(raw: &[u8], from_email: &str, subject_prefix: Option<&str
         new_header.extend_from_slice(&field.bytes);
     }
 
+    let from_rewritten = first_from_captured.is_some();
     if let Some(from_value) = first_from_captured {
-        if !reply_to_already_present {
+        // Only add Reply-To when there is a real original address to reply to;
+        // a blank From value would otherwise produce an empty `Reply-To:` line.
+        let original_is_blank = unfold_value(&from_value).trim_ascii().is_empty();
+        if !reply_to_already_present && !original_is_blank {
             new_header.extend_from_slice(&build_reply_to(&from_value, line_ending));
         }
     }
 
-    let mut output = Vec::with_capacity(new_header.len() + separator.len() + body.len());
-    output.extend_from_slice(&new_header);
-    output.extend_from_slice(separator);
-    output.extend_from_slice(body);
-    output
+    let mut message = Vec::with_capacity(new_header.len() + separator.len() + body.len());
+    message.extend_from_slice(&new_header);
+    message.extend_from_slice(separator);
+    message.extend_from_slice(body);
+
+    RewriteOutcome {
+        message,
+        from_rewritten,
+    }
 }
 
 /// Split a raw message into `(header_block, separator, body)`.
@@ -667,7 +692,7 @@ mod tests {
                     Subject: Hello\r\n\
                     \r\n\
                     Body text here.\r\n";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
 
         assert!(text.contains("From: Alice Sender <relay@example.com>\r\n"));
@@ -682,7 +707,7 @@ mod tests {
     #[test]
     fn rewrites_bare_address_from_without_display_name() {
         let raw = b"From: alice@example.net\r\nTo: info@example.com\r\n\r\nbody";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("From: relay@example.com\r\n"));
         assert!(text.contains("Reply-To: alice@example.net\r\n"));
@@ -700,7 +725,7 @@ mod tests {
                     Subject: Hi\r\n\
                     \r\n\
                     body";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
         assert!(!text.contains("Return-Path"));
         assert!(!text.contains("Sender:"));
@@ -721,7 +746,7 @@ mod tests {
                     First paragraph.\r\n\
                     \r\n\
                     Second paragraph after a blank line.\r\n";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         assert_eq!(
             output,
             raw.to_vec(),
@@ -732,7 +757,7 @@ mod tests {
     #[test]
     fn folded_from_across_continuation_lines_is_captured_for_reply_to() {
         let raw = b"From: Alice\r\n <alice@example.net>\r\nTo: info@example.com\r\n\r\nbody";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
         // Reply-To preserves the original folded value verbatim.
         assert!(text.contains("Reply-To: Alice\r\n <alice@example.net>\r\n"));
@@ -747,7 +772,7 @@ mod tests {
                     To: info@example.com\r\n\
                     \r\n\
                     body";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
         let reply_to_count = text.matches("Reply-To:").count();
         assert_eq!(reply_to_count, 1, "must not add a second Reply-To");
@@ -761,7 +786,7 @@ mod tests {
                     To: info@example.com\r\n\
                     \r\n\
                     body";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
         let from_count = text.matches("From:").count();
         assert_eq!(from_count, 1, "exactly one From in the output");
@@ -775,7 +800,7 @@ mod tests {
             b"From: Alice <alice@example.net>\r\nTo: info@example.com\r\n\r\n".to_vec();
         let body: Vec<u8> = (0u16..=255).map(|byte| byte as u8).collect();
         raw.extend_from_slice(&body);
-        let output = rewrite_message(&raw, "relay@example.com", None);
+        let output = rewrite_message(&raw, "relay@example.com", None).message;
 
         // The output must end with the exact 0x00..=0xFF body bytes.
         assert!(
@@ -787,7 +812,7 @@ mod tests {
     #[test]
     fn lf_only_line_endings_are_handled() {
         let raw = b"From: Alice <alice@example.net>\nTo: info@example.com\n\nbody";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("From: Alice <relay@example.com>\n"));
         assert!(text.contains("Reply-To: Alice <alice@example.net>\n"));
@@ -797,14 +822,14 @@ mod tests {
     #[test]
     fn header_only_message_with_no_blank_line_round_trips_when_unchanged() {
         let raw = b"To: info@example.com\r\nSubject: no body\r\n";
-        let output = rewrite_message(raw, "relay@example.com", None);
+        let output = rewrite_message(raw, "relay@example.com", None).message;
         assert_eq!(output, raw.to_vec());
     }
 
     #[test]
     fn subject_prefix_is_prepended_preserving_the_rest() {
         let raw = b"From: Alice <alice@example.net>\r\nSubject: Hello\r\n\r\nbody";
-        let output = rewrite_message(raw, "relay@example.com", Some("[EXT] "));
+        let output = rewrite_message(raw, "relay@example.com", Some("[EXT] ")).message;
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("Subject: [EXT] Hello\r\n"));
     }
@@ -812,7 +837,7 @@ mod tests {
     #[test]
     fn subject_prefix_without_existing_subject_adds_nothing() {
         let raw = b"From: Alice <alice@example.net>\r\nTo: info@example.com\r\n\r\nbody";
-        let output = rewrite_message(raw, "relay@example.com", Some("[EXT] "));
+        let output = rewrite_message(raw, "relay@example.com", Some("[EXT] ")).message;
         let text = String::from_utf8(output).unwrap();
         assert!(!text.contains("[EXT]"), "no Subject to prefix");
     }
@@ -828,7 +853,7 @@ mod tests {
         raw.extend_from_slice(b"To: info@example.com\r\n\r\nbody");
 
         let start = std::time::Instant::now();
-        let output = rewrite_message(&raw, "relay@example.com", None);
+        let output = rewrite_message(&raw, "relay@example.com", None).message;
         let elapsed = start.elapsed();
 
         assert!(!output.is_empty());
@@ -836,5 +861,56 @@ mod tests {
             elapsed < std::time::Duration::from_secs(1),
             "rewrite took {elapsed:?}, expected < 1s"
         );
+    }
+
+    #[test]
+    fn from_rewritten_is_true_when_a_from_header_exists() {
+        let raw = b"From: Bob <bob@example.net>\r\nTo: info@example.com\r\n\r\nbody";
+        let outcome = rewrite_message(raw, "relay@example.com", None);
+        assert!(outcome.from_rewritten);
+    }
+
+    #[test]
+    fn no_from_header_reports_from_not_rewritten_and_adds_no_reply_to() {
+        // A message that begins with a blank line has an empty header block, so
+        // there is no From to rewrite and no Reply-To should be synthesized.
+        let raw = b"\r\nFrom: attacker@evil.example\r\nTo: info@example.com\r\n\r\nbody";
+        let outcome = rewrite_message(raw, "relay@example.com", None);
+        assert!(!outcome.from_rewritten, "no header From existed to rewrite");
+        let text = String::from_utf8(outcome.message).unwrap();
+        assert!(!text.contains("Reply-To:"), "no Reply-To without a From");
+    }
+
+    #[test]
+    fn empty_from_value_does_not_emit_an_empty_reply_to() {
+        let raw = b"From:\r\nTo: info@example.com\r\n\r\nbody";
+        let outcome = rewrite_message(raw, "relay@example.com", None);
+        assert!(
+            outcome.from_rewritten,
+            "the From field existed and was rewritten"
+        );
+        let text = String::from_utf8(outcome.message).unwrap();
+        assert!(text.contains("From: relay@example.com\r\n"));
+        assert!(
+            !text.contains("Reply-To:"),
+            "blank original From -> no Reply-To"
+        );
+    }
+
+    #[test]
+    fn header_field_name_matching_is_case_insensitive() {
+        // Unusual casing on the field names must still be matched and rewritten.
+        let raw = b"FROM: Alice <alice@example.net>\r\n\
+                    DKIM-signature: v=1; b=abc\r\n\
+                    Message-id: <x@example.net>\r\n\
+                    To: info@example.com\r\n\
+                    \r\n\
+                    body";
+        let outcome = rewrite_message(raw, "relay@example.com", None);
+        assert!(outcome.from_rewritten);
+        let text = String::from_utf8(outcome.message).unwrap();
+        assert!(text.contains("From: Alice <relay@example.com>\r\n"));
+        assert!(!text.to_ascii_lowercase().contains("dkim-signature"));
+        assert!(!text.to_ascii_lowercase().contains("message-id"));
     }
 }
