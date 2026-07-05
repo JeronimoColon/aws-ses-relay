@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::forward::MAX_TO_ADDRESSES;
+
 /// Fully validated configuration for the forwarder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -25,6 +27,10 @@ pub struct Config {
     pub allow_plus_sign: bool,
     /// When true, messages whose spam verdict is `FAIL` are dropped.
     pub drop_spam: bool,
+    /// When set, enables duplicate-suppression: a marker object per `messageId`
+    /// is written to this bucket via a conditional put. Absent means idempotency
+    /// is disabled (at-least-once delivery may forward a message more than once).
+    pub idempotency_bucket: Option<String>,
 }
 
 /// Aggregated configuration error: carries every problem found, not just the
@@ -72,13 +78,15 @@ impl Config {
         let forward_mapping = required(vars, "FORWARD_MAPPING", &mut problems)
             .and_then(|raw| parse_forward_mapping(&raw, &mut problems));
 
-        let subject_prefix = match vars.get("SUBJECT_PREFIX") {
-            Some(value) if !value.is_empty() => Some(value.clone()),
-            _ => None,
-        };
+        let subject_prefix = parse_subject_prefix(vars, &mut problems);
 
         let allow_plus_sign = parse_optional_bool(vars, "ALLOW_PLUS_SIGN", true, &mut problems);
         let drop_spam = parse_optional_bool(vars, "DROP_SPAM", false, &mut problems);
+
+        let idempotency_bucket = match vars.get("IDEMPOTENCY_BUCKET") {
+            Some(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
+            _ => None,
+        };
 
         if !problems.is_empty() {
             return Err(ConfigError { problems });
@@ -93,8 +101,29 @@ impl Config {
             subject_prefix,
             allow_plus_sign,
             drop_spam,
+            idempotency_bucket,
         })
     }
+}
+
+/// Parse the optional `SUBJECT_PREFIX`. An empty value means "no prefix". A
+/// value containing control characters (which could inject a header line) is
+/// rejected.
+fn parse_subject_prefix(
+    vars: &HashMap<String, String>,
+    problems: &mut Vec<String>,
+) -> Option<String> {
+    let value = match vars.get("SUBJECT_PREFIX") {
+        Some(value) if !value.is_empty() => value,
+        _ => return None,
+    };
+    if value.chars().any(|character| character.is_control()) {
+        problems.push(format!(
+            "SUBJECT_PREFIX must not contain control characters such as CR/LF; got {value:?}"
+        ));
+        return None;
+    }
+    Some(value.clone())
 }
 
 /// Fetch a required variable, trimming surrounding whitespace. Records a
@@ -118,9 +147,22 @@ fn required(
 }
 
 /// Light sanity check: the address must be `local@domain` with both parts
-/// non-empty. Stricter RFC validation is intentionally avoided — a malformed
-/// address that slips past this is rejected by SES at send time anyway.
+/// non-empty and must contain no whitespace or control characters. Rejecting
+/// control characters matters for defense in depth: this value is written
+/// verbatim into the outgoing `From` header, so a stray CR/LF could otherwise
+/// inject a header line. Stricter RFC validation is intentionally avoided — a
+/// malformed address that slips past this is rejected by SES at send time.
 fn validate_email(name: &str, value: String, problems: &mut Vec<String>) -> Option<String> {
+    if value
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace())
+    {
+        problems.push(format!(
+            "{name} must not contain whitespace or control characters; got {value:?}"
+        ));
+        return None;
+    }
+
     let parts: Vec<&str> = value.split('@').collect();
     let looks_like_email = parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty();
     if looks_like_email {
@@ -269,6 +311,15 @@ fn parse_destinations(
         }
     }
 
+    if entry_valid && destinations.len() > MAX_TO_ADDRESSES {
+        problems.push(format!(
+            "FORWARD_MAPPING key `{key}` has {} destinations, exceeding the SES per-send cap \
+             of {MAX_TO_ADDRESSES}; every message matching this key would otherwise fail at send",
+            destinations.len()
+        ));
+        entry_valid = false;
+    }
+
     if entry_valid {
         Some(destinations)
     } else {
@@ -309,9 +360,101 @@ mod tests {
         assert!(config.allow_plus_sign, "ALLOW_PLUS_SIGN defaults to true");
         assert!(!config.drop_spam, "DROP_SPAM defaults to false");
         assert_eq!(
+            config.idempotency_bucket, None,
+            "idempotency off by default"
+        );
+        assert_eq!(
             config.forward_mapping.get("info@example.com"),
             Some(&vec!["dest@example.net".to_string()])
         );
+    }
+
+    #[test]
+    fn idempotency_bucket_is_parsed_when_set() {
+        let mut environment = valid_vars();
+        environment.insert(
+            "IDEMPOTENCY_BUCKET".to_string(),
+            "dedup-bucket-example".to_string(),
+        );
+        let config = Config::from_env(&environment).expect("valid config");
+        assert_eq!(
+            config.idempotency_bucket,
+            Some("dedup-bucket-example".to_string())
+        );
+    }
+
+    #[test]
+    fn from_email_with_embedded_crlf_is_rejected() {
+        let mut environment = valid_vars();
+        environment.insert(
+            "FROM_EMAIL".to_string(),
+            "relay\r\nBcc: sneaky@example.net@example.com".to_string(),
+        );
+        let error = Config::from_env(&environment).expect_err("CRLF must be rejected");
+        assert!(error
+            .problems
+            .iter()
+            .any(|p| p.contains("FROM_EMAIL") && p.contains("control characters")));
+    }
+
+    #[test]
+    fn subject_prefix_with_control_chars_is_rejected() {
+        let mut environment = valid_vars();
+        environment.insert(
+            "SUBJECT_PREFIX".to_string(),
+            "[EXT]\r\nBcc: x@example.net ".to_string(),
+        );
+        let error = Config::from_env(&environment).expect_err("CRLF must be rejected");
+        assert!(error
+            .problems
+            .iter()
+            .any(|p| p.contains("SUBJECT_PREFIX") && p.contains("control characters")));
+    }
+
+    #[test]
+    fn mapping_key_over_fifty_destinations_errors_at_config_time() {
+        let addresses: Vec<String> = (0..51)
+            .map(|n| format!("\"dest{n}@example.net\""))
+            .collect();
+        let mut environment = valid_vars();
+        environment.insert(
+            "FORWARD_MAPPING".to_string(),
+            format!(r#"{{"@example.com":[{}]}}"#, addresses.join(",")),
+        );
+        let error = Config::from_env(&environment).expect_err("over-cap key must error");
+        assert!(error
+            .problems
+            .iter()
+            .any(|p| p.contains("exceeding the SES per-send cap")));
+    }
+
+    #[test]
+    fn a_single_error_surfaces_a_mixed_set_of_problems_together() {
+        // Malformed FROM_EMAIL + missing EMAIL_BUCKET + non-boolean DROP_SPAM
+        // must all appear in one aggregated error — that is the whole point of
+        // collecting problems rather than failing on the first.
+        let environment = vars(&[
+            ("FROM_EMAIL", "not-an-email"),
+            (
+                "FORWARD_MAPPING",
+                r#"{"info@example.com":["dest@example.net"]}"#,
+            ),
+            ("DROP_SPAM", "yes"),
+        ]);
+        let error = Config::from_env(&environment).expect_err("multiple problems");
+        assert!(
+            error.problems.iter().any(|p| p.contains("FROM_EMAIL")),
+            "FROM_EMAIL problem"
+        );
+        assert!(
+            error.problems.iter().any(|p| p.contains("EMAIL_BUCKET")),
+            "EMAIL_BUCKET problem"
+        );
+        assert!(
+            error.problems.iter().any(|p| p.contains("DROP_SPAM")),
+            "DROP_SPAM problem"
+        );
+        assert!(error.problems.len() >= 3, "all three surfaced together");
     }
 
     #[test]
