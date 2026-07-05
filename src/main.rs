@@ -2,14 +2,17 @@
 //! clients once at cold start, then serve invocations.
 
 mod config;
+mod event;
 mod forward;
 mod handler;
+mod idempotency;
 
-use aws_lambda_events::event::ses::SimpleEmailEvent;
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 
 use crate::config::Config;
+use crate::event::SesEvent;
 use crate::handler::{handle_event, S3MessageStore, SesEmailSender};
+use crate::idempotency::S3IdempotencyStore;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
@@ -22,15 +25,18 @@ async fn main() -> Result<(), Error> {
         Error::from(error.to_string())
     })?;
 
-    // Build the AWS clients once; they are reused across warm invocations.
+    // Build the AWS clients once; they are reused across warm invocations. One
+    // S3 client backs both the message store and the (opt-in) idempotency store.
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .load()
         .await;
-    let store = S3MessageStore::new(aws_sdk_s3::Client::new(&aws_config));
+    let s3_client = aws_sdk_s3::Client::new(&aws_config);
+    let store = S3MessageStore::new(s3_client.clone());
+    let idempotency = S3IdempotencyStore::new(s3_client, config.idempotency_bucket.clone());
     let sender = SesEmailSender::new(aws_sdk_sesv2::Client::new(&aws_config));
 
-    run(service_fn(|event: LambdaEvent<SimpleEmailEvent>| async {
-        handle_event(event.payload, &config, &store, &sender)
+    run(service_fn(|event: LambdaEvent<SesEvent>| async {
+        handle_event(event.payload, &config, &store, &sender, &idempotency)
             .await
             .map_err(Error::from)
     }))

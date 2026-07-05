@@ -1,30 +1,36 @@
 //! Orchestration: parse the SES event, apply the verdict gate, resolve
-//! destinations, fetch the raw message from S3, rewrite it, and send it.
+//! destinations, claim the message for idempotency, fetch the raw message from
+//! S3, rewrite it, and send it.
 //!
-//! S3 and SES are reached only through the [`MessageStore`] and [`EmailSender`]
-//! traits, so the whole flow is tested with in-memory fakes — no network and no
-//! AWS credentials.
+//! S3, SES, and the idempotency store are reached only through the
+//! [`MessageStore`], [`EmailSender`], and [`IdempotencyStore`] traits, so the
+//! whole flow is tested with in-memory fakes — no network and no AWS
+//! credentials.
 //!
-//! A **drop** (a message we deliberately do not forward) is a success: the
-//! handler returns `Ok(())`. Errors are reserved for genuine failures (bad
-//! event, S3/SES failure, oversize message) so Lambda's retry / OnFailure
+//! A **drop** (a message we deliberately do not forward: no match, a failed
+//! verdict, or a duplicate delivery) is a success: the handler returns
+//! `Ok(())`. Errors are reserved for genuine failures (bad event, S3/SES
+//! failure, oversize/empty/From-less message) so Lambda's retry / OnFailure
 //! machinery engages only for real problems.
 
-use aws_lambda_events::event::ses::{SimpleEmailEvent, SimpleEmailReceipt, SimpleEmailRecord};
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
-use crate::forward::{evaluate_verdicts, resolve_destinations, rewrite_message, ForwardError};
-use crate::forward::{DropReason, GateDecision};
+use crate::event::{SesEvent, SesReceipt, SesRecord};
+use crate::forward::{
+    evaluate_verdicts, resolve_destinations, rewrite_message, DropReason, ForwardError,
+    GateDecision, ResolvedForward,
+};
+use crate::idempotency::{ClaimOutcome, IdempotencyStore};
 
 /// Largest raw message we will fetch and forward. SES caps a send at 40 MB
 /// *after* base64 encoding, which inflates the raw size by roughly one third,
 /// so ~30 MB of raw bytes is the safe ceiling.
 const MAX_RAW_MESSAGE_BYTES: usize = 30 * 1024 * 1024;
 
-/// Boxed error carried out of the storage/sender traits. Concrete AWS SDK
-/// errors satisfy these bounds and convert with `?`.
+/// Boxed error carried out of the storage/sender/idempotency traits. Concrete
+/// AWS SDK errors satisfy these bounds and convert with `?`.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Exactly what we hand to SES, captured as a plain value so tests can assert
@@ -36,13 +42,27 @@ pub struct SendRawEmailRequest {
     pub raw_message: Vec<u8>,
 }
 
+/// The outcome of a size-bounded fetch.
+pub enum FetchResult {
+    /// The message was within the size limit.
+    Message(Vec<u8>),
+    /// The object exceeds the limit; its size is reported without buffering it.
+    TooLarge { size: u64 },
+}
+
 // Native async fn in traits yields a non-`Send`-annotated future in the trait
 // signature; every concrete implementation here (AWS SDK clients and the test
 // fakes) produces a `Send` future, so the real Lambda future is `Send`.
 #[allow(async_fn_in_trait)]
-/// Reads the raw stored message from object storage.
+/// Reads the raw stored message from object storage, bounded by a size cap.
 pub trait MessageStore {
-    async fn get_raw_message(&self, bucket: &str, key: &str) -> Result<Vec<u8>, BoxError>;
+    /// Fetch the raw message, refusing to buffer more than `max_bytes`.
+    async fn fetch_raw_message(
+        &self,
+        bucket: &str,
+        key: &str,
+        max_bytes: usize,
+    ) -> Result<FetchResult, BoxError>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -59,8 +79,20 @@ pub enum HandlerError {
     NoRecords,
     #[error("event contained {0} records; expected exactly one aws:ses record")]
     TooManyRecords(usize),
+    #[error("event source `{event_source}` is not `aws:ses`")]
+    SourceMismatch { event_source: String },
     #[error("event was missing a required field: {0}")]
     MissingField(&'static str),
+    #[error(
+        "messageId `{message_id}` is not a valid object-key token \
+         (allowed: letters, digits, '.', '_', '-')"
+    )]
+    InvalidMessageId { message_id: String },
+    #[error(
+        "receipt.action provides only one of bucketName/objectKey; an S3 action \
+         must carry both or neither"
+    )]
+    PartialS3Action,
     #[error(
         "event S3 bucket `{event_bucket}` does not match configured EMAIL_BUCKET \
          `{configured_bucket}`; refusing to read from an unlisted bucket"
@@ -69,13 +101,23 @@ pub enum HandlerError {
         event_bucket: String,
         configured_bucket: String,
     },
+    #[error("stored message `{message_id}` is empty; refusing to send an empty message")]
+    EmptyMessage { message_id: String },
+    #[error("message `{message_id}` has no From header to rewrite; refusing to forward")]
+    NoFromHeader { message_id: String },
     #[error(
         "stored message is {size} bytes, exceeding the {limit}-byte limit \
          (SES 40 MB post-base64 send cap; base64 inflates ~33%)"
     )]
-    MessageTooLarge { size: usize, limit: usize },
+    MessageTooLarge { size: u64, limit: usize },
     #[error(transparent)]
     Resolve(#[from] ForwardError),
+    #[error("failed to claim idempotency marker for message `{message_id}`")]
+    Idempotency {
+        message_id: String,
+        #[source]
+        source: BoxError,
+    },
     #[error("failed to read message from S3 (bucket `{bucket}`, key `{key}`)")]
     S3 {
         bucket: String,
@@ -93,21 +135,29 @@ pub enum HandlerError {
 }
 
 /// Handle one SES invocation end to end.
-pub async fn handle_event<S, E>(
-    event: SimpleEmailEvent,
+pub async fn handle_event<S, E, I>(
+    event: SesEvent,
     config: &Config,
     store: &S,
     sender: &E,
+    idempotency: &I,
 ) -> Result<(), HandlerError>
 where
     S: MessageStore,
     E: EmailSender,
+    I: IdempotencyStore,
 {
-    // 1. Parse: exactly one SES record.
+    // 1. Parse: exactly one record, from aws:ses.
     let record = single_record(&event)?;
-    let mail = &record.ses.mail;
+    if let Some(source) = record.event_source.as_deref() {
+        if !source.eq_ignore_ascii_case("aws:ses") {
+            return Err(HandlerError::SourceMismatch {
+                event_source: source.to_string(),
+            });
+        }
+    }
     let receipt = &record.ses.receipt;
-    let message_id = mail.message_id.clone().unwrap_or_default();
+    let message_id = record.ses.mail.message_id.clone().unwrap_or_default();
 
     // 2. Verdict gate.
     let spam_verdict = receipt.spam_verdict.status.as_deref();
@@ -127,7 +177,7 @@ where
         return Ok(());
     }
 
-    // 3. Resolve destinations. A no-match is a drop with zero S3/SES calls.
+    // 3. Resolve destinations. A no-match is a drop with zero downstream calls.
     let resolved = resolve_destinations(
         &receipt.recipients,
         &config.forward_mapping,
@@ -141,44 +191,114 @@ where
         );
         return Ok(());
     }
-    let matched: Vec<&str> = resolved
-        .matched_recipients
-        .iter()
-        .map(|matched| matched.incoming.as_str())
-        .collect();
 
-    // 4. Locate and fetch the raw message from S3.
-    let (bucket, key) = resolve_s3_location(receipt, config, &message_id)?;
-    let raw = store
-        .get_raw_message(&bucket, &key)
+    // 4. We are going to forward: require a usable messageId (it keys both the
+    //    S3 object in the fallback path and the idempotency marker).
+    if message_id.is_empty() {
+        return Err(HandlerError::MissingField("mail.messageId"));
+    }
+    if !is_valid_message_id(&message_id) {
+        return Err(HandlerError::InvalidMessageId {
+            message_id: message_id.clone(),
+        });
+    }
+
+    // 5. Claim the message. A duplicate delivery is a drop; a fresh claim is
+    //    released if the forward fails, so a retry can re-process it.
+    match idempotency
+        .claim(&message_id)
+        .await
+        .map_err(|source| HandlerError::Idempotency {
+            message_id: message_id.clone(),
+            source,
+        })? {
+        ClaimOutcome::AlreadyProcessed => {
+            info!(
+                message_id = %message_id,
+                "duplicate delivery; already processed, skipping (no S3/SES calls)"
+            );
+            return Ok(());
+        }
+        ClaimOutcome::New => {}
+    }
+
+    let forward_result =
+        forward_message(&message_id, receipt, config, store, sender, resolved).await;
+    if forward_result.is_err() {
+        if let Err(release_error) = idempotency.release(&message_id).await {
+            warn!(
+                message_id = %message_id,
+                error = %release_error,
+                "failed to release idempotency marker after a processing error; \
+                 a retry of this message may be suppressed"
+            );
+        }
+    }
+    forward_result
+}
+
+/// Fetch, rewrite, and send. Factored out so the idempotency claim can be
+/// released on any failure here.
+async fn forward_message<S, E>(
+    message_id: &str,
+    receipt: &SesReceipt,
+    config: &Config,
+    store: &S,
+    sender: &E,
+    resolved: ResolvedForward,
+) -> Result<(), HandlerError>
+where
+    S: MessageStore,
+    E: EmailSender,
+{
+    let (bucket, key) = resolve_s3_location(receipt, config, message_id)?;
+
+    let raw = match store
+        .fetch_raw_message(&bucket, &key, MAX_RAW_MESSAGE_BYTES)
         .await
         .map_err(|source| HandlerError::S3 {
             bucket: bucket.clone(),
             key: key.clone(),
             source,
-        })?;
-    if raw.len() > MAX_RAW_MESSAGE_BYTES {
-        return Err(HandlerError::MessageTooLarge {
-            size: raw.len(),
-            limit: MAX_RAW_MESSAGE_BYTES,
+        })? {
+        FetchResult::TooLarge { size } => {
+            return Err(HandlerError::MessageTooLarge {
+                size,
+                limit: MAX_RAW_MESSAGE_BYTES,
+            });
+        }
+        FetchResult::Message(bytes) => bytes,
+    };
+
+    if raw.is_empty() {
+        return Err(HandlerError::EmptyMessage {
+            message_id: message_id.to_string(),
         });
     }
 
-    // 5. Rewrite headers on bytes.
-    let rewritten = rewrite_message(&raw, &config.from_email, config.subject_prefix.as_deref());
+    let rewrite = rewrite_message(&raw, &config.from_email, config.subject_prefix.as_deref());
+    if !rewrite.from_rewritten {
+        return Err(HandlerError::NoFromHeader {
+            message_id: message_id.to_string(),
+        });
+    }
 
-    // 6. Send.
+    let matched: Vec<String> = resolved
+        .matched_recipients
+        .iter()
+        .map(|recipient| recipient.incoming.clone())
+        .collect();
     let request = SendRawEmailRequest {
         from_email_address: config.from_email.clone(),
         to_addresses: resolved.destinations,
-        raw_message: rewritten,
+        raw_message: rewrite.message,
     };
     let recipient_count = request.to_addresses.len();
     sender
         .send_raw_email(&request)
         .await
         .map_err(|source| HandlerError::Ses {
-            message_id: message_id.clone(),
+            message_id: message_id.to_string(),
             recipient_count,
             source,
         })?;
@@ -193,7 +313,7 @@ where
 }
 
 /// Return the single SES record, or an error naming the shape problem.
-fn single_record(event: &SimpleEmailEvent) -> Result<&SimpleEmailRecord, HandlerError> {
+fn single_record(event: &SesEvent) -> Result<&SesRecord, HandlerError> {
     match event.records.as_slice() {
         [record] => Ok(record),
         [] => Err(HandlerError::NoRecords),
@@ -201,20 +321,30 @@ fn single_record(event: &SimpleEmailEvent) -> Result<&SimpleEmailRecord, Handler
     }
 }
 
+/// SES message ids are short alphanumeric tokens. Validating the shape stops a
+/// hostile `messageId` from being used as an arbitrary S3 object key.
+fn is_valid_message_id(message_id: &str) -> bool {
+    !message_id.is_empty()
+        && message_id.len() <= 256
+        && message_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
 /// Decide which S3 bucket and object key hold the raw message.
 ///
-/// Plan §7 assumed the event's `receipt.action` always carries `bucketName` and
-/// `objectKey`. AWS's actual event schema only does so for an **S3-action**
-/// event; the direct SES→Lambda flow delivers a **Lambda-action** event whose
-/// `receipt.action` has no S3 fields. So:
+/// AWS's event schema carries `bucketName`/`objectKey` only for an
+/// **S3-action** event; the direct SES→Lambda flow delivers a **Lambda-action**
+/// event whose `receipt.action` has no S3 fields. So:
 ///
-/// - When the event provides S3 fields, use them — but enforce the allowlist by
-///   refusing any bucket other than the configured `EMAIL_BUCKET`.
-/// - Otherwise fall back to `EMAIL_BUCKET` and SES's documented storage
-///   convention: the object key equals the `messageId` (this requires the S3
-///   receipt-rule action to use no key prefix).
+/// - When the event provides both S3 fields, use them — but enforce the
+///   allowlist by refusing any bucket other than the configured `EMAIL_BUCKET`.
+/// - When it provides neither, fall back to `EMAIL_BUCKET` and SES's documented
+///   storage convention: the object key equals the `messageId` (this requires
+///   the S3 receipt-rule action to use no key prefix).
+/// - Exactly one of the two present is a malformed action and is rejected.
 fn resolve_s3_location(
-    receipt: &SimpleEmailReceipt,
+    receipt: &SesReceipt,
     config: &Config,
     message_id: &str,
 ) -> Result<(String, String), HandlerError> {
@@ -229,14 +359,8 @@ fn resolve_s3_location(
             }
             Ok((event_bucket.clone(), object_key.clone()))
         }
-        _ => {
-            if message_id.is_empty() {
-                return Err(HandlerError::MissingField(
-                    "mail.messageId (needed as the S3 object key when the event carries no S3 action fields)",
-                ));
-            }
-            Ok((config.email_bucket.clone(), message_id.to_string()))
-        }
+        (None, None) => Ok((config.email_bucket.clone(), message_id.to_string())),
+        _ => Err(HandlerError::PartialS3Action),
     }
 }
 
@@ -256,7 +380,12 @@ impl S3MessageStore {
 }
 
 impl MessageStore for S3MessageStore {
-    async fn get_raw_message(&self, bucket: &str, key: &str) -> Result<Vec<u8>, BoxError> {
+    async fn fetch_raw_message(
+        &self,
+        bucket: &str,
+        key: &str,
+        max_bytes: usize,
+    ) -> Result<FetchResult, BoxError> {
         let output = self
             .client
             .get_object()
@@ -264,10 +393,28 @@ impl MessageStore for S3MessageStore {
             .key(key)
             .send()
             .await?;
+
+        // Reject before downloading the body when the size is already known —
+        // this bounds memory rather than buffering an oversized object first.
+        if let Some(length) = output.content_length() {
+            if length > max_bytes as i64 {
+                return Ok(FetchResult::TooLarge {
+                    size: length as u64,
+                });
+            }
+        }
+
         // Collect to bytes — never a lossy UTF-8 string — so non-UTF-8 mail is
         // preserved exactly.
         let aggregated = output.body.collect().await?;
-        Ok(aggregated.into_bytes().to_vec())
+        let bytes = aggregated.into_bytes();
+        // Belt-and-braces if Content-Length was absent or wrong.
+        if bytes.len() > max_bytes {
+            return Ok(FetchResult::TooLarge {
+                size: bytes.len() as u64,
+            });
+        }
+        Ok(FetchResult::Message(bytes.to_vec()))
     }
 }
 
@@ -310,6 +457,7 @@ impl EmailSender for SesEmailSender {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::event::SesRecord;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -345,7 +493,12 @@ mod tests {
     }
 
     impl MessageStore for FakeStore {
-        async fn get_raw_message(&self, bucket: &str, key: &str) -> Result<Vec<u8>, BoxError> {
+        async fn fetch_raw_message(
+            &self,
+            bucket: &str,
+            key: &str,
+            max_bytes: usize,
+        ) -> Result<FetchResult, BoxError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -353,7 +506,12 @@ mod tests {
             if self.fail {
                 return Err("simulated S3 failure".into());
             }
-            Ok(self.body.clone())
+            if self.body.len() > max_bytes {
+                return Ok(FetchResult::TooLarge {
+                    size: self.body.len() as u64,
+                });
+            }
+            Ok(FetchResult::Message(self.body.clone()))
         }
     }
 
@@ -393,6 +551,52 @@ mod tests {
         }
     }
 
+    struct FakeIdempotency {
+        outcome: ClaimOutcome,
+        fail_claim: bool,
+        releases: Mutex<Vec<String>>,
+    }
+
+    impl FakeIdempotency {
+        fn new() -> Self {
+            Self {
+                outcome: ClaimOutcome::New,
+                fail_claim: false,
+                releases: Mutex::new(Vec::new()),
+            }
+        }
+        fn duplicate() -> Self {
+            Self {
+                outcome: ClaimOutcome::AlreadyProcessed,
+                fail_claim: false,
+                releases: Mutex::new(Vec::new()),
+            }
+        }
+        fn failing_claim() -> Self {
+            Self {
+                outcome: ClaimOutcome::New,
+                fail_claim: true,
+                releases: Mutex::new(Vec::new()),
+            }
+        }
+        fn release_count(&self) -> usize {
+            self.releases.lock().unwrap().len()
+        }
+    }
+
+    impl IdempotencyStore for FakeIdempotency {
+        async fn claim(&self, _message_id: &str) -> Result<ClaimOutcome, BoxError> {
+            if self.fail_claim {
+                return Err("simulated idempotency failure".into());
+            }
+            Ok(self.outcome)
+        }
+        async fn release(&self, message_id: &str) -> Result<(), BoxError> {
+            self.releases.lock().unwrap().push(message_id.to_string());
+            Ok(())
+        }
+    }
+
     // --- fixtures -------------------------------------------------------
 
     fn test_config() -> Config {
@@ -408,6 +612,7 @@ mod tests {
             subject_prefix: None,
             allow_plus_sign: true,
             drop_spam: false,
+            idempotency_bucket: None,
         }
     }
 
@@ -421,19 +626,30 @@ mod tests {
         format!(r#"{{ "type": "S3", "bucketName": "{bucket}", "objectKey": "{key}" }}"#)
     }
 
-    /// Build a `SimpleEmailEvent` by deserializing a documented-shape SES event.
+    /// Build a documented-shape SES event (with many fields the code ignores).
     fn event(
         recipients: &[&str],
         spam: &str,
         virus: &str,
         message_id: &str,
         action_json: &str,
-    ) -> SimpleEmailEvent {
+    ) -> SesEvent {
+        event_with_source("aws:ses", recipients, spam, virus, message_id, action_json)
+    }
+
+    fn event_with_source(
+        source: &str,
+        recipients: &[&str],
+        spam: &str,
+        virus: &str,
+        message_id: &str,
+        action_json: &str,
+    ) -> SesEvent {
         let recipients_json = serde_json::to_string(recipients).unwrap();
         let json = format!(
             r#"{{
               "Records": [{{
-                "eventSource": "aws:ses",
+                "eventSource": "{source}",
                 "eventVersion": "1.0",
                 "ses": {{
                   "mail": {{
@@ -475,6 +691,7 @@ mod tests {
             b"From: Bob <bob@example.net>\r\nTo: info@example.com\r\nSubject: Hi\r\n\r\nBody.\r\n";
         let store = FakeStore::returning(input);
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "PASS",
@@ -483,18 +700,16 @@ mod tests {
             &lambda_action(),
         );
 
-        handle_event(event, &config, &store, &sender)
+        handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect("happy path succeeds");
 
-        // Fetched from the configured bucket, keyed by messageId.
         assert_eq!(store.call_count(), 1);
         assert_eq!(
             store.last_call(),
             ("inbound-bucket-example".to_string(), "msg-123".to_string())
         );
 
-        // Sent exactly once with the exact expected request.
         assert_eq!(sender.call_count(), 1);
         let request = sender.last_request();
         assert_eq!(request.from_email_address, "relay@example.com");
@@ -508,6 +723,7 @@ mod tests {
         let config = test_config();
         let store = FakeStore::returning(b"unused");
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["nobody@example.com"],
             "PASS",
@@ -516,7 +732,7 @@ mod tests {
             &lambda_action(),
         );
 
-        handle_event(event, &config, &store, &sender)
+        handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect("no match is a drop, not an error");
 
@@ -529,6 +745,7 @@ mod tests {
         let config = test_config();
         let store = FakeStore::returning(b"unused");
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "PASS",
@@ -537,7 +754,7 @@ mod tests {
             &lambda_action(),
         );
 
-        handle_event(event, &config, &store, &sender)
+        handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect("virus FAIL is a drop, not an error");
 
@@ -551,6 +768,7 @@ mod tests {
         config.drop_spam = true;
         let store = FakeStore::returning(b"unused");
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "FAIL",
@@ -559,7 +777,7 @@ mod tests {
             &lambda_action(),
         );
 
-        handle_event(event, &config, &store, &sender)
+        handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect("spam FAIL with DROP_SPAM is a drop");
 
@@ -568,14 +786,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreign_event_source_errors() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = event_with_source(
+            "aws:sns",
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "m1",
+            &lambda_action(),
+        );
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("non-ses source must error");
+        assert!(matches!(error, HandlerError::SourceMismatch { .. }));
+        assert_eq!(store.call_count(), 0);
+    }
+
+    #[tokio::test]
     async fn bucket_mismatch_errors_with_no_calls() {
         let config = test_config();
         let store = FakeStore::returning(b"unused");
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let action = s3_action("someone-elses-bucket", "some-key");
         let event = event(&["info@example.com"], "PASS", "PASS", "msg-1", &action);
 
-        let error = handle_event(event, &config, &store, &sender)
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect_err("bucket mismatch must error");
         assert!(matches!(error, HandlerError::BucketMismatch { .. }));
@@ -594,10 +835,11 @@ mod tests {
             b"From: Bob <bob@example.net>\r\nTo: info@example.com\r\n\r\nbody",
         );
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let action = s3_action("inbound-bucket-example", "prefix/custom-key");
         let event = event(&["info@example.com"], "PASS", "PASS", "msg-1", &action);
 
-        handle_event(event, &config, &store, &sender)
+        handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect("matching S3-action event succeeds");
 
@@ -612,11 +854,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_s3_action_errors() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        // Only bucketName, no objectKey.
+        let action = r#"{ "type": "S3", "bucketName": "inbound-bucket-example" }"#;
+        let event = event(&["info@example.com"], "PASS", "PASS", "msg-1", action);
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("half-populated S3 action must error");
+        assert!(matches!(error, HandlerError::PartialS3Action));
+        assert_eq!(store.call_count(), 0);
+    }
+
+    #[tokio::test]
     async fn oversize_object_errors_before_send() {
         let config = test_config();
         let oversize = vec![b'x'; MAX_RAW_MESSAGE_BYTES + 1];
         let store = FakeStore::returning(&oversize);
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "PASS",
@@ -625,26 +885,190 @@ mod tests {
             &lambda_action(),
         );
 
-        let error = handle_event(event, &config, &store, &sender)
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect_err("oversize must error");
         assert!(matches!(error, HandlerError::MessageTooLarge { .. }));
-        assert_eq!(store.call_count(), 1, "fetch happens, then the size check");
         assert_eq!(sender.call_count(), 0, "no send for an oversize message");
     }
 
     #[tokio::test]
-    async fn missing_message_id_without_s3_fields_errors() {
+    async fn empty_object_errors_before_send() {
+        let config = test_config();
+        let store = FakeStore::returning(b"");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("empty object must error");
+        assert!(matches!(error, HandlerError::EmptyMessage { .. }));
+        assert_eq!(sender.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn message_with_no_from_header_errors_before_send() {
+        let config = test_config();
+        // Leading blank line -> the whole message is body, no header From.
+        let store = FakeStore::returning(b"\r\nFrom: attacker@evil.example\r\n\r\nbody");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("no From to rewrite must error");
+        assert!(matches!(error, HandlerError::NoFromHeader { .. }));
+        assert_eq!(sender.call_count(), 0, "never forward an un-rewritten From");
+    }
+
+    #[tokio::test]
+    async fn empty_message_id_errors() {
         let config = test_config();
         let store = FakeStore::returning(b"unused");
         let sender = FakeSender::new();
-        // Empty messageId and a Lambda action with no S3 fields.
+        let idempotency = FakeIdempotency::new();
         let event = event(&["info@example.com"], "PASS", "PASS", "", &lambda_action());
 
-        let error = handle_event(event, &config, &store, &sender)
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
             .await
-            .expect_err("no key derivable");
+            .expect_err("empty messageId must error");
         assert!(matches!(error, HandlerError::MissingField(_)));
+        assert_eq!(store.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn hostile_message_id_is_rejected() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        // A slash would otherwise become an arbitrary object key within the bucket.
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "secrets/private-object",
+            &lambda_action(),
+        );
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("slash in messageId must be rejected");
+        assert!(matches!(error, HandlerError::InvalidMessageId { .. }));
+        assert_eq!(store.call_count(), 0, "never fetch with a hostile key");
+    }
+
+    #[tokio::test]
+    async fn no_records_errors() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = SesEvent { records: vec![] };
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("zero records must error");
+        assert!(matches!(error, HandlerError::NoRecords));
+    }
+
+    #[tokio::test]
+    async fn too_many_records_errors() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = SesEvent {
+            records: vec![SesRecord::default(), SesRecord::default()],
+        };
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("two records must error");
+        assert!(matches!(error, HandlerError::TooManyRecords(2)));
+    }
+
+    #[tokio::test]
+    async fn duplicate_delivery_is_dropped_with_zero_calls() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::duplicate();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect("a duplicate is a drop, not an error");
+
+        assert_eq!(store.call_count(), 0, "no fetch for a duplicate");
+        assert_eq!(sender.call_count(), 0, "no send for a duplicate");
+    }
+
+    #[tokio::test]
+    async fn claim_is_released_when_send_fails() {
+        let config = test_config();
+        let store = FakeStore::returning(
+            b"From: Bob <bob@example.net>\r\nTo: info@example.com\r\n\r\nbody",
+        );
+        let sender = FakeSender::failing();
+        let idempotency = FakeIdempotency::new();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("send failure propagates");
+        assert!(matches!(error, HandlerError::Ses { .. }));
+        assert_eq!(
+            idempotency.release_count(),
+            1,
+            "the claim must be released so a retry can re-process"
+        );
+    }
+
+    #[tokio::test]
+    async fn idempotency_claim_failure_errors_before_fetch() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::failing_claim();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PASS",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("claim failure must error");
+        assert!(matches!(error, HandlerError::Idempotency { .. }));
         assert_eq!(store.call_count(), 0);
         assert_eq!(sender.call_count(), 0);
     }
@@ -654,6 +1078,7 @@ mod tests {
         let config = test_config();
         let store = FakeStore::failing();
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "PASS",
@@ -662,7 +1087,7 @@ mod tests {
             &lambda_action(),
         );
 
-        let error = handle_event(event, &config, &store, &sender)
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect_err("S3 failure must propagate");
         assert!(matches!(error, HandlerError::S3 { .. }));
@@ -676,6 +1101,7 @@ mod tests {
             b"From: Bob <bob@example.net>\r\nTo: info@example.com\r\n\r\nbody",
         );
         let sender = FakeSender::failing();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "PASS",
@@ -684,7 +1110,7 @@ mod tests {
             &lambda_action(),
         );
 
-        let error = handle_event(event, &config, &store, &sender)
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect_err("SES failure must propagate");
         assert!(matches!(error, HandlerError::Ses { .. }));
@@ -719,10 +1145,6 @@ mod tests {
             "--b1--\r\n",
         );
 
-        // Return-Path, DKIM-Signature (with its folded continuation), and
-        // Message-ID are gone; From is rewritten; Subject is prefixed; Reply-To
-        // equal to the original From is appended; the multipart body is
-        // preserved exactly.
         let expected = concat!(
             "Received: from mx.example.net (mx.example.net [203.0.113.7])\r\n",
             "\tby inbound-smtp.us-east-1.amazonaws.com with SMTP id abc123\r\n",
@@ -746,6 +1168,7 @@ mod tests {
 
         let store = FakeStore::returning(input.as_bytes());
         let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
         let event = event(
             &["info@example.com"],
             "PASS",
@@ -754,7 +1177,7 @@ mod tests {
             &lambda_action(),
         );
 
-        handle_event(event, &config, &store, &sender)
+        handle_event(event, &config, &store, &sender, &idempotency)
             .await
             .expect("end-to-end succeeds");
 
