@@ -27,6 +27,10 @@ pub struct Config {
     pub allow_plus_sign: bool,
     /// When true, messages whose spam verdict is `FAIL` are dropped.
     pub drop_spam: bool,
+    /// When true, messages whose virus verdict is `PROCESSING_FAILED` (the scan
+    /// could not run) are dropped — failing closed rather than forwarding an
+    /// unscannable message.
+    pub drop_unscanned: bool,
     /// When set, enables duplicate-suppression: a marker object per `messageId`
     /// is written to this bucket via a conditional put. Absent means idempotency
     /// is disabled (at-least-once delivery may forward a message more than once).
@@ -82,6 +86,7 @@ impl Config {
 
         let allow_plus_sign = parse_optional_bool(vars, "ALLOW_PLUS_SIGN", true, &mut problems);
         let drop_spam = parse_optional_bool(vars, "DROP_SPAM", false, &mut problems);
+        let drop_unscanned = parse_optional_bool(vars, "DROP_UNSCANNED", false, &mut problems);
 
         let idempotency_bucket = match vars.get("IDEMPOTENCY_BUCKET") {
             Some(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
@@ -101,6 +106,7 @@ impl Config {
             subject_prefix,
             allow_plus_sign,
             drop_spam,
+            drop_unscanned,
             idempotency_bucket,
         })
     }
@@ -359,6 +365,7 @@ mod tests {
         assert_eq!(config.subject_prefix, None);
         assert!(config.allow_plus_sign, "ALLOW_PLUS_SIGN defaults to true");
         assert!(!config.drop_spam, "DROP_SPAM defaults to false");
+        assert!(!config.drop_unscanned, "DROP_UNSCANNED defaults to false");
         assert_eq!(
             config.idempotency_bucket, None,
             "idempotency off by default"

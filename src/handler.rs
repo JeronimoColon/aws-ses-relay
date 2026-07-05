@@ -19,8 +19,8 @@ use tracing::{info, warn};
 use crate::config::Config;
 use crate::event::{SesEvent, SesReceipt, SesRecord};
 use crate::forward::{
-    evaluate_verdicts, resolve_destinations, rewrite_message, DropReason, ForwardError,
-    GateDecision, ResolvedForward,
+    evaluate_verdicts, resolve_destinations, rewrite_message, verdict_is_concerning, DropReason,
+    ForwardError, GateDecision, ResolvedForward,
 };
 use crate::idempotency::{ClaimOutcome, IdempotencyStore};
 
@@ -162,19 +162,40 @@ where
     // 2. Verdict gate.
     let spam_verdict = receipt.spam_verdict.status.as_deref();
     let virus_verdict = receipt.virus_verdict.status.as_deref();
-    if let GateDecision::Drop(reason) =
-        evaluate_verdicts(spam_verdict, virus_verdict, config.drop_spam)
-    {
-        let reason = match reason {
-            DropReason::Virus => "virus verdict FAIL",
-            DropReason::Spam => "spam verdict FAIL with DROP_SPAM enabled",
-        };
-        info!(
-            message_id = %message_id,
-            reason,
-            "dropping message per verdict gate (message remains in S3)"
-        );
-        return Ok(());
+    match evaluate_verdicts(
+        spam_verdict,
+        virus_verdict,
+        config.drop_spam,
+        config.drop_unscanned,
+    ) {
+        GateDecision::Drop(reason) => {
+            let reason = match reason {
+                DropReason::Virus => "virus verdict FAIL",
+                DropReason::Spam => "spam verdict FAIL with DROP_SPAM enabled",
+                DropReason::UnscannedVirus => {
+                    "virus verdict PROCESSING_FAILED with DROP_UNSCANNED enabled"
+                }
+            };
+            info!(
+                message_id = %message_id,
+                reason,
+                "dropping message per verdict gate (message remains in S3)"
+            );
+            return Ok(());
+        }
+        GateDecision::Forward => {
+            // Fail-open forward: make a bypassed/inconclusive scan visible and
+            // alarmable rather than silent (it reads the same as a clean PASS).
+            if verdict_is_concerning(virus_verdict) || verdict_is_concerning(spam_verdict) {
+                warn!(
+                    message_id = %message_id,
+                    spam_verdict = ?spam_verdict,
+                    virus_verdict = ?virus_verdict,
+                    "forwarding despite a non-PASS spam/virus verdict; \
+                     scanning may be inconclusive or disabled on the receipt rule"
+                );
+            }
+        }
     }
 
     // 3. Resolve destinations. A no-match is a drop with zero downstream calls.
@@ -612,6 +633,7 @@ mod tests {
             subject_prefix: None,
             allow_plus_sign: true,
             drop_spam: false,
+            drop_unscanned: false,
             idempotency_bucket: None,
         }
     }
@@ -783,6 +805,56 @@ mod tests {
 
         assert_eq!(store.call_count(), 0);
         assert_eq!(sender.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn drop_unscanned_drops_processing_failed_virus_with_zero_calls() {
+        let mut config = test_config();
+        config.drop_unscanned = true;
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PROCESSING_FAILED",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect("unscanned drop is not an error");
+
+        assert_eq!(store.call_count(), 0);
+        assert_eq!(sender.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn processing_failed_virus_still_forwards_by_default() {
+        let config = test_config();
+        let store = FakeStore::returning(
+            b"From: Bob <bob@example.net>\r\nTo: info@example.com\r\n\r\nbody",
+        );
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        let event = event(
+            &["info@example.com"],
+            "PASS",
+            "PROCESSING_FAILED",
+            "msg-1",
+            &lambda_action(),
+        );
+
+        handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect("fail-open by default");
+
+        assert_eq!(
+            sender.call_count(),
+            1,
+            "forwarded despite the unscannable verdict"
+        );
     }
 
     #[tokio::test]

@@ -160,31 +160,52 @@ pub enum GateDecision {
 pub enum DropReason {
     Virus,
     Spam,
+    /// The virus scan could not render a verdict (`PROCESSING_FAILED`) and
+    /// `drop_unscanned` is set, so we fail closed rather than forward it.
+    UnscannedVirus,
 }
 
 /// Apply the spam/virus gate.
 ///
-/// A `FAIL` virus verdict always drops. A `FAIL` spam verdict drops only when
-/// `drop_spam` is set. Every other status — `PASS`, `GRAY`,
-/// `PROCESSING_FAILED`, `DISABLED`, or absent — forwards.
+/// A `FAIL` virus verdict always drops. A `PROCESSING_FAILED` virus verdict
+/// drops only when `drop_unscanned` is set (fail closed on an unscannable
+/// message). A `FAIL` spam verdict drops only when `drop_spam` is set. Every
+/// other status — `PASS`, `GRAY`, `DISABLED`, or absent — forwards.
 pub fn evaluate_verdicts(
     spam_verdict: Option<&str>,
     virus_verdict: Option<&str>,
     drop_spam: bool,
+    drop_unscanned: bool,
 ) -> GateDecision {
-    if verdict_failed(virus_verdict) {
+    if verdict_matches(virus_verdict, "FAIL") {
         return GateDecision::Drop(DropReason::Virus);
     }
-    if drop_spam && verdict_failed(spam_verdict) {
+    if drop_unscanned && verdict_matches(virus_verdict, "PROCESSING_FAILED") {
+        return GateDecision::Drop(DropReason::UnscannedVirus);
+    }
+    if drop_spam && verdict_matches(spam_verdict, "FAIL") {
         return GateDecision::Drop(DropReason::Spam);
     }
     GateDecision::Forward
 }
 
-/// True only when the verdict is present and equal to `FAIL` (case-insensitive).
-fn verdict_failed(verdict: Option<&str>) -> bool {
+/// Whether a forwarded message carried a verdict worth surfacing: present, and
+/// neither `PASS` (clean) nor `DISABLED` (scanning deliberately off). This makes
+/// a fail-open forward (spam `FAIL`, virus `PROCESSING_FAILED`, `GRAY`) visible
+/// and alarmable in the logs rather than silent.
+pub fn verdict_is_concerning(verdict: Option<&str>) -> bool {
     match verdict {
-        Some(status) => status.eq_ignore_ascii_case("FAIL"),
+        Some(status) => {
+            !status.eq_ignore_ascii_case("PASS") && !status.eq_ignore_ascii_case("DISABLED")
+        }
+        None => false,
+    }
+}
+
+/// True only when the verdict is present and equal to `target` (case-insensitive).
+fn verdict_matches(verdict: Option<&str>, target: &str) -> bool {
+    match verdict {
+        Some(status) => status.eq_ignore_ascii_case(target),
         None => false,
     }
 }
@@ -646,11 +667,11 @@ mod tests {
     #[test]
     fn virus_fail_always_drops() {
         assert_eq!(
-            evaluate_verdicts(Some("PASS"), Some("FAIL"), false),
+            evaluate_verdicts(Some("PASS"), Some("FAIL"), false, false),
             GateDecision::Drop(DropReason::Virus)
         );
         assert_eq!(
-            evaluate_verdicts(Some("PASS"), Some("FAIL"), true),
+            evaluate_verdicts(Some("PASS"), Some("FAIL"), true, true),
             GateDecision::Drop(DropReason::Virus)
         );
     }
@@ -658,20 +679,35 @@ mod tests {
     #[test]
     fn spam_fail_drops_only_when_drop_spam_set() {
         assert_eq!(
-            evaluate_verdicts(Some("FAIL"), Some("PASS"), false),
+            evaluate_verdicts(Some("FAIL"), Some("PASS"), false, false),
             GateDecision::Forward
         );
         assert_eq!(
-            evaluate_verdicts(Some("FAIL"), Some("PASS"), true),
+            evaluate_verdicts(Some("FAIL"), Some("PASS"), true, false),
             GateDecision::Drop(DropReason::Spam)
         );
     }
 
     #[test]
-    fn non_fail_statuses_all_forward() {
+    fn unscanned_virus_drops_only_when_drop_unscanned_set() {
+        // PROCESSING_FAILED means the scanner could not render a verdict.
+        assert_eq!(
+            evaluate_verdicts(Some("PASS"), Some("PROCESSING_FAILED"), false, false),
+            GateDecision::Forward,
+            "fail open by default"
+        );
+        assert_eq!(
+            evaluate_verdicts(Some("PASS"), Some("PROCESSING_FAILED"), false, true),
+            GateDecision::Drop(DropReason::UnscannedVirus),
+            "fail closed with DROP_UNSCANNED"
+        );
+    }
+
+    #[test]
+    fn non_fail_statuses_all_forward_by_default() {
         for status in ["PASS", "GRAY", "PROCESSING_FAILED", "DISABLED"] {
             assert_eq!(
-                evaluate_verdicts(Some(status), Some(status), true),
+                evaluate_verdicts(Some(status), Some(status), false, false),
                 GateDecision::Forward,
                 "status = {status}"
             );
@@ -680,7 +716,20 @@ mod tests {
 
     #[test]
     fn absent_verdicts_forward() {
-        assert_eq!(evaluate_verdicts(None, None, true), GateDecision::Forward);
+        assert_eq!(
+            evaluate_verdicts(None, None, true, true),
+            GateDecision::Forward
+        );
+    }
+
+    #[test]
+    fn concerning_verdict_flags_bypasses_but_not_clean_or_disabled() {
+        assert!(verdict_is_concerning(Some("FAIL")));
+        assert!(verdict_is_concerning(Some("GRAY")));
+        assert!(verdict_is_concerning(Some("PROCESSING_FAILED")));
+        assert!(!verdict_is_concerning(Some("PASS")));
+        assert!(!verdict_is_concerning(Some("DISABLED")));
+        assert!(!verdict_is_concerning(None));
     }
 
     // --- rewrite_message ------------------------------------------------

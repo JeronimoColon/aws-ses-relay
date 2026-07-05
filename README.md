@@ -93,6 +93,7 @@ cold start and reports **every** problem at once.
 | `SUBJECT_PREFIX` | no | none | Prepended to the `Subject` when non-empty (e.g. `"[EXT] "` — include the trailing space you want). Rejected at startup if it contains control characters. |
 | `ALLOW_PLUS_SIGN` | no | `true` | When `true`, a `+tag` suffix on the recipient mailbox is stripped before matching (`info+sales@…` matches as `info@…`). Accepts only `true`/`false`, case-insensitive. |
 | `DROP_SPAM` | no | `false` | When `true`, messages whose spam verdict is `FAIL` are dropped. Accepts only `true`/`false`, case-insensitive. |
+| `DROP_UNSCANNED` | no | `false` | When `true`, messages whose virus verdict is `PROCESSING_FAILED` (the scan could not run) are dropped — failing closed instead of forwarding an unscannable message. Accepts only `true`/`false`. |
 | `IDEMPOTENCY_BUCKET` | no | none | When set, enables duplicate suppression (see [Idempotency](#idempotency)). Markers are written to this bucket; it may be `EMAIL_BUCKET` or a separate bucket. |
 
 ### `FORWARD_MAPPING`
@@ -117,9 +118,17 @@ first match wins:
 > **Size limit.** Lambda caps total environment variables at 4 KB, which bounds
 > how large `FORWARD_MAPPING` can be.
 
-> **`DROP_SPAM` is inert** unless spam/virus scanning is enabled on the SES
-> receipt rule; otherwise the verdict status is `DISABLED` and nothing is
-> dropped. "Drop" means "do not forward" — the S3 object still exists.
+> **`DROP_SPAM`/`DROP_UNSCANNED` are inert** unless spam/virus scanning is
+> enabled on the SES receipt rule; otherwise the verdict status is `DISABLED`
+> and nothing is dropped. "Drop" means "do not forward" — the S3 object still
+> exists.
+
+> **Fail-open by default.** The gate drops only on a `FAIL` virus verdict
+> (always) and a `FAIL` spam verdict (with `DROP_SPAM`). Every other status —
+> `GRAY`, `PROCESSING_FAILED`, `DISABLED`, or absent — is *forwarded*. Whenever
+> a message is forwarded despite a non-`PASS`, non-`DISABLED` verdict, the
+> function logs a `WARN` so the bypass is visible; alarm on it if that matters.
+> Set `DROP_UNSCANNED=true` to fail closed when the virus scan could not run.
 
 ## Least-privilege IAM
 
