@@ -147,8 +147,9 @@ first match wins:
 The function's execution role needs only:
 
 - **`s3:GetObject`** on the inbound objects, e.g.
-  `arn:aws:s3:::YOUR_BUCKET/*` (scope to your key prefix if you use one).
-- **`ses:SendEmail`** *and* **`ses:SendRawEmail`** on `arn:aws:ses:REGION:ACCOUNT:identity/*`.
+  `arn:aws:s3:::YOUR_INBOUND_BUCKET/*` (scope to your key prefix if you use one).
+- **`ses:SendEmail`** *and* **`ses:SendRawEmail`** on
+  `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/*`.
 
   > While SES is in the **sandbox**, a send is authorized against the verified
   > *recipient* identity as well, so scoping to a single sender identity fails
@@ -253,7 +254,6 @@ cargo lambda build --release --arm64
 
 # Deploy (creates or updates the function).
 cargo lambda deploy \
-  --enable-function-url=false \
   --memory 512 --timeout 30 --region YOUR_REGION \
   --env-var FROM_EMAIL=relay@example.com \
   --env-var EMAIL_BUCKET=your-inbound-bucket \

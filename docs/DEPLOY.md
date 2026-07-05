@@ -54,9 +54,16 @@ ones):
 | `YOUR_INBOUND_BUCKET` | S3 bucket SES writes raw mail to |
 | `YOUR_IDEMPOTENCY_BUCKET` | Bucket for duplicate-suppression markers (may equal the inbound bucket) |
 | `YOUR_RULE_SET` / `YOUR_RULE` | SES receipt-rule-set and rule names you choose |
+| `YOUR_OWNER` | Your GitHub org/user, for downloading releases |
 
 The example commands assume `FROM_EMAIL=relay@YOUR_DOMAIN` and a `FORWARD_MAPPING`
 of `{"@YOUR_DOMAIN":["you@example.net"]}`. Adjust to your mapping (see the README).
+
+**Working directory.** Clone this repository and run every command below **from
+the repo root** — the policy steps reference the `deploy/**/*.json` files with
+`file://` paths relative to that root. This is true even if you download the
+release artifact rather than build (the artifact is only the binary; the policy
+files come from the repo).
 
 ---
 
@@ -160,13 +167,21 @@ aws lambda create-function --function-name aws-ses-relay --region YOUR_REGION \
   --role arn:aws:iam::YOUR_ACCOUNT_ID:role/aws-ses-relay \
   --zip-file fileb://bootstrap-arm64.zip \
   --memory-size 512 --timeout 30 \
-  --environment 'Variables={FROM_EMAIL=relay@YOUR_DOMAIN,EMAIL_BUCKET=YOUR_INBOUND_BUCKET,FORWARD_MAPPING={"@YOUR_DOMAIN":["you@example.net"]}}'
+  --environment '{"Variables":{"FROM_EMAIL":"relay@YOUR_DOMAIN","EMAIL_BUCKET":"YOUR_INBOUND_BUCKET","FORWARD_MAPPING":"{\"@YOUR_DOMAIN\":[\"you@example.net\"]}"}}'
 ```
+
+> **Why the JSON `--environment` form, not `Variables={...}`?** `FORWARD_MAPPING`
+> is itself JSON, and the CLI's `Variables={...}` shorthand cannot carry a JSON
+> value — it splits on the commas and chokes on the colons, so the command
+> errors out before it reaches AWS. Pass the full JSON structure and encode
+> `FORWARD_MAPPING` as an **escaped JSON string** (note the `\"`). To enable
+> idempotency, add `"IDEMPOTENCY_BUCKET":"..."` inside the `Variables` object.
 
 `--handler bootstrap` is a required placeholder that the OS-only
 `provided.al2023` runtime ignores (your `bootstrap` executable is the
-entrypoint). To also set idempotency, add `IDEMPOTENCY_BUCKET=...` to the
-variables. Grab the function ARN for the next steps:
+entrypoint). If `create-function` returns *"The role defined for the function
+cannot be assumed by Lambda"*, the role from Step 5 hasn't finished propagating —
+wait ~10 seconds and re-run. Grab the function ARN for the next steps:
 
 ```sh
 aws lambda get-function --function-name aws-ses-relay --region YOUR_REGION \
@@ -237,7 +252,8 @@ Send a real email from an outside account to an address that matches your
 destination.
 
 If it doesn't, read the logs — the function logs message ids, recipients,
-verdicts, and its decision as JSON:
+verdicts, and its decision as JSON. The log group is created on the **first**
+invocation, so it won't exist until at least one message has been sent:
 
 ```sh
 aws logs tail /aws/lambda/aws-ses-relay --region YOUR_REGION --since 10m --follow
@@ -246,9 +262,27 @@ aws logs tail /aws/lambda/aws-ses-relay --region YOUR_REGION --since 10m --follo
 Common first-deploy causes: still in the **SES sandbox** (Step 0) so the send is
 denied; the destination bounced; or an IAM/`AccessDenied` message pointing at a
 missing permission from Step 5. You can also reprocess a stored message directly
-with a minimal replay event (see the README's "Failure handling"):
+with a minimal replay event. Write the payload first, substituting a real stored
+`messageId` and a recipient that matches your `FORWARD_MAPPING`:
 
 ```sh
+cat > replay-event.json <<'JSON'
+{
+  "Records": [{
+    "eventSource": "aws:ses",
+    "ses": {
+      "mail": { "messageId": "THE_MESSAGE_ID" },
+      "receipt": {
+        "recipients": ["anything@YOUR_DOMAIN"],
+        "spamVerdict": { "status": "PASS" },
+        "virusVerdict": { "status": "PASS" },
+        "action": { "type": "Lambda" }
+      }
+    }
+  }]
+}
+JSON
+
 aws lambda invoke --function-name aws-ses-relay --region YOUR_REGION \
   --cli-binary-format raw-in-base64-out --payload file://replay-event.json /dev/stdout
 ```
@@ -256,24 +290,42 @@ aws lambda invoke --function-name aws-ses-relay --region YOUR_REGION \
 ## Step 10 — Operational hardening
 
 ```sh
-# Do not lose mail on repeated failure: send failed async invokes to a DLQ/topic.
+# Do not lose mail on repeated failure: send failed async invokes to a queue.
+# Create the queue first, and grant the *execution role* sqs:SendMessage on it --
+# Lambda writes the on-failure record using the function's own role, so without
+# this permission failed events are silently dropped. (Edit the queue ARN in
+# deploy/iam/dlq-send-policy.json to match your region/account.)
+aws sqs create-queue --queue-name aws-ses-relay-dlq --region YOUR_REGION
+aws iam put-role-policy --role-name aws-ses-relay \
+  --policy-name aws-ses-relay-dlq \
+  --policy-document file://deploy/iam/dlq-send-policy.json
 aws lambda put-function-event-invoke-config --function-name aws-ses-relay \
   --region YOUR_REGION --maximum-retry-attempts 2 \
   --destination-config '{"OnFailure":{"Destination":"arn:aws:sqs:YOUR_REGION:YOUR_ACCOUNT_ID:aws-ses-relay-dlq"}}'
 
-# Bound CloudWatch cost/retention (recipient addresses appear in logs).
+# Bound CloudWatch cost/retention (recipient addresses appear in logs). The log
+# group is created on the first invocation; create it explicitly so retention
+# can be set before then.
+aws logs create-log-group --log-group-name /aws/lambda/aws-ses-relay \
+  --region YOUR_REGION 2>/dev/null || true
 aws logs put-retention-policy --log-group-name /aws/lambda/aws-ses-relay \
   --region YOUR_REGION --retention-in-days 30
 
-# Expire stored mail and idempotency markers (edit deploy/s3/lifecycle.json first;
-# split the rules if the idempotency bucket is separate).
+# Expire stored mail (edit the day count in deploy/s3/lifecycle.json first).
 aws s3api put-bucket-lifecycle-configuration --bucket YOUR_INBOUND_BUCKET \
   --lifecycle-configuration file://deploy/s3/lifecycle.json
+
+# If idempotency uses a SEPARATE bucket, give its markers their own short TTL.
+# (With one shared bucket, markers instead expire on the mail rule above -- so
+# use a separate bucket if you want a short marker TTL for faster self-heal.)
+aws s3api put-bucket-lifecycle-configuration --bucket YOUR_IDEMPOTENCY_BUCKET \
+  --lifecycle-configuration file://deploy/s3/lifecycle-idempotency.json
 ```
 
-Also consider a CloudWatch alarm on the function's `Errors` metric. See the
-README's "Scaling to high volume" and "Operations" sections for the reasoning
-behind each of these.
+For an SNS on-failure topic instead of SQS, grant the role `sns:Publish` on the
+topic rather than `sqs:SendMessage`. Also consider a CloudWatch alarm on the
+function's `Errors` metric. See the README's "Scaling to high volume" and
+"Operations" sections for the reasoning behind each of these.
 
 ## Updating later
 

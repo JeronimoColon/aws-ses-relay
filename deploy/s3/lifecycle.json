@@ -5,12 +5,6 @@
       "Filter": { "Prefix": "" },
       "Status": "Enabled",
       "Expiration": { "Days": 30 }
-    },
-    {
-      "ID": "expire-idempotency-markers",
-      "Filter": { "Prefix": "idempotency/" },
-      "Status": "Enabled",
-      "Expiration": { "Days": 4 }
     }
   ]
 }
