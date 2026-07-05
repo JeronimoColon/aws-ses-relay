@@ -1,5 +1,8 @@
 # aws-ses-relay
 
+[![CI](https://github.com/JeronimoColon/aws-ses-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/JeronimoColon/aws-ses-relay/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A single AWS Lambda function, written in Rust, that forwards inbound email
 received by Amazon SES. SES receives mail for a domain you control, stores the
 raw message in S3, and invokes this function; the function reads the raw bytes
