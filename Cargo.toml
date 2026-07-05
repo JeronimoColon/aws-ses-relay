@@ -26,3 +26,11 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["macros", "rt"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+# Test-only. Lets the idempotency tests run the real S3 claim/release paths
+# against a replayed HTTP layer (StaticReplayClient) instead of live AWS. None
+# of these are compiled into the release Lambda binary.
+aws-smithy-runtime = { version = "1", features = ["client", "test-util"] }
+aws-smithy-types = "1"
+http = "1"
