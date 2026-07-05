@@ -12,12 +12,6 @@
       "Effect": "Allow",
       "Action": ["ses:SendEmail", "ses:SendRawEmail"],
       "Resource": "arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/*"
-    },
-    {
-      "Sid": "IdempotencyMarkers",
-      "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:DeleteObject"],
-      "Resource": "arn:aws:s3:::YOUR_IDEMPOTENCY_BUCKET/idempotency/*"
     }
   ]
 }

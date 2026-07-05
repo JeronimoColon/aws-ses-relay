@@ -10,9 +10,9 @@ document is only the *how* and the *order*.
 
 ## Before you start
 
-**Blocker you must handle: the SES sandbox.** A new AWS account's SES is in the
-**sandbox**, where you can send only to email addresses you have *verified in
-advance*, at a low quota. A forwarder's entire job is sending to real
+**Step 0 — get out of the SES sandbox (do this first).** A new AWS account's SES
+is in the **sandbox**, where you can send only to email addresses you have
+*verified in advance*, at a low quota. A forwarder's entire job is sending to real
 destinations, so **in the sandbox every forward fails.** Request production
 access early (it can take a day to be granted):
 
@@ -65,6 +65,17 @@ the repo root** — the policy steps reference the `deploy/**/*.json` files with
 release artifact rather than build (the artifact is only the binary; the policy
 files come from the repo).
 
+**Substitute every placeholder before applying any policy.** AWS accepts a policy
+containing a leftover `YOUR_*` token as *syntactically valid* and returns
+success — then it silently misbehaves. The worst case: a leftover
+`YOUR_RULE_SET`/`YOUR_RULE` in the bucket policy's `aws:SourceArn` makes S3
+**reject every real SES write**, so mail is never stored and nothing errors at
+deploy time. After editing the `deploy/` files, confirm none remain:
+
+```sh
+grep -rn 'YOUR_' deploy/   # must print nothing before you apply the policies
+```
+
 ---
 
 ## Step 1 — Get the deployment artifact
@@ -95,10 +106,12 @@ single executable named `bootstrap`, built for ARM64.
 aws sesv2 create-email-identity --email-identity YOUR_DOMAIN --region YOUR_REGION
 ```
 
-Publish the DNS records SES returns: the **DKIM** CNAMEs (for deliverability) and
-an **MX** record pointing mail for `YOUR_DOMAIN` at SES's inbound endpoint for
-your region (`inbound-smtp.YOUR_REGION.amazonaws.com`, priority 10). Wait for the
-identity to show as verified:
+Publish the DNS records SES returns: the **DKIM** CNAMEs and an **MX** record
+pointing mail for `YOUR_DOMAIN` at SES's inbound endpoint for your region
+(`inbound-smtp.YOUR_REGION.amazonaws.com`, priority 10). The **DKIM CNAMEs are
+what verify the identity** (they also sign outbound mail), so the wait below does
+not finish until they resolve; the MX record is what routes inbound mail to SES.
+Wait for the identity to show as verified:
 
 ```sh
 aws sesv2 get-email-identity --email-identity YOUR_DOMAIN --region YOUR_REGION \
@@ -134,15 +147,13 @@ aws s3api put-bucket-policy --bucket YOUR_INBOUND_BUCKET \
   --policy file://deploy/s3/inbound-bucket-policy.json
 ```
 
-> If you use a **separate** idempotency bucket, create it the same way (Step 3);
-> it needs no SES policy, only the Lambda's write permission (Step 5).
-
 ## Step 5 — Create the execution role
 
 This is the identity the *function* runs as. Fill the placeholders in
 [`deploy/iam/lambda-execution-policy.json`](../deploy/iam/lambda-execution-policy.json)
-first (drop the `IdempotencyMarkers` statement if you won't set
-`IDEMPOTENCY_BUCKET`).
+first — it grants S3 read + SES send, which is everything the default
+(idempotency-off) deploy needs. Duplicate suppression adds one more policy later,
+only if you turn it on — see [the optional section](#optional--enable-duplicate-suppression-idempotency).
 
 ```sh
 # Trust policy lets Lambda assume the role.
@@ -153,7 +164,7 @@ aws iam create-role --role-name aws-ses-relay \
 aws iam attach-role-policy --role-name aws-ses-relay \
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
-# S3 read + SES send (+ optional idempotency writes).
+# S3 read + SES send.
 aws iam put-role-policy --role-name aws-ses-relay \
   --policy-name aws-ses-relay-permissions \
   --policy-document file://deploy/iam/lambda-execution-policy.json
@@ -174,8 +185,9 @@ aws lambda create-function --function-name aws-ses-relay --region YOUR_REGION \
 > is itself JSON, and the CLI's `Variables={...}` shorthand cannot carry a JSON
 > value — it splits on the commas and chokes on the colons, so the command
 > errors out before it reaches AWS. Pass the full JSON structure and encode
-> `FORWARD_MAPPING` as an **escaped JSON string** (note the `\"`). To enable
-> idempotency, add `"IDEMPOTENCY_BUCKET":"..."` inside the `Variables` object.
+> `FORWARD_MAPPING` as an **escaped JSON string** (note the `\"`). Duplicate
+> suppression is off by default; turn it on later via
+> [the optional section](#optional--enable-duplicate-suppression-idempotency).
 
 `--handler bootstrap` is a required placeholder that the OS-only
 `provided.al2023` runtime ignores (your `bootstrap` executable is the
@@ -314,18 +326,43 @@ aws logs put-retention-policy --log-group-name /aws/lambda/aws-ses-relay \
 # Expire stored mail (edit the day count in deploy/s3/lifecycle.json first).
 aws s3api put-bucket-lifecycle-configuration --bucket YOUR_INBOUND_BUCKET \
   --lifecycle-configuration file://deploy/s3/lifecycle.json
-
-# If idempotency uses a SEPARATE bucket, give its markers their own short TTL.
-# (With one shared bucket, markers instead expire on the mail rule above -- so
-# use a separate bucket if you want a short marker TTL for faster self-heal.)
-aws s3api put-bucket-lifecycle-configuration --bucket YOUR_IDEMPOTENCY_BUCKET \
-  --lifecycle-configuration file://deploy/s3/lifecycle-idempotency.json
 ```
 
 For an SNS on-failure topic instead of SQS, grant the role `sns:Publish` on the
 topic rather than `sqs:SendMessage`. Also consider a CloudWatch alarm on the
 function's `Errors` metric. See the README's "Scaling to high volume" and
 "Operations" sections for the reasoning behind each of these.
+
+## Optional — enable duplicate suppression (idempotency)
+
+By default idempotency is **off** and the forwarder is plain at-least-once — a
+rare duplicate SES delivery may forward twice (see the README's "Idempotency"
+section for the trade-offs and edge cases). To turn it on, pick a marker bucket —
+a **separate** bucket keeps the mail bucket single-purpose — and run:
+
+```sh
+# 1. Create the marker bucket (skip if you reuse the inbound bucket).
+aws s3api create-bucket --bucket YOUR_IDEMPOTENCY_BUCKET --region YOUR_REGION \
+  --create-bucket-configuration LocationConstraint=YOUR_REGION
+# (omit --create-bucket-configuration in us-east-1)
+
+# 2. Let the function write and delete markers (edit the ARN in the file first).
+aws iam put-role-policy --role-name aws-ses-relay \
+  --policy-name aws-ses-relay-idempotency \
+  --policy-document file://deploy/iam/idempotency-policy.json
+
+# 3. Point the function at the bucket. NOTE: --environment REPLACES the whole
+#    variable set, so repeat every existing variable plus IDEMPOTENCY_BUCKET.
+aws lambda update-function-configuration --function-name aws-ses-relay \
+  --region YOUR_REGION \
+  --environment '{"Variables":{"FROM_EMAIL":"relay@YOUR_DOMAIN","EMAIL_BUCKET":"YOUR_INBOUND_BUCKET","FORWARD_MAPPING":"{\"@YOUR_DOMAIN\":[\"you@example.net\"]}","IDEMPOTENCY_BUCKET":"YOUR_IDEMPOTENCY_BUCKET"}}'
+
+# 4. Expire markers so an orphaned one self-heals (a few days, comfortably past
+#    the SES retry window). Apply to the marker bucket (or the inbound bucket if
+#    you reused it).
+aws s3api put-bucket-lifecycle-configuration --bucket YOUR_IDEMPOTENCY_BUCKET \
+  --lifecycle-configuration file://deploy/s3/lifecycle-idempotency.json
+```
 
 ## Updating later
 

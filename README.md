@@ -176,7 +176,7 @@ aws lambda add-permission \
   --action lambda:InvokeFunction \
   --principal ses.amazonaws.com \
   --source-account YOUR_ACCOUNT_ID \
-  --source-arn arn:aws:ses:REGION:YOUR_ACCOUNT_ID:receipt-rule-set/RULE_SET:receipt-rule/RULE
+  --source-arn arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:receipt-rule-set/YOUR_RULE_SET:receipt-rule/YOUR_RULE
 ```
 
 Do not grant `lambda:InvokeFunction` to any other principal.
