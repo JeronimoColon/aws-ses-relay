@@ -40,13 +40,30 @@ async fn main() -> Result<(), Error> {
             .await
             .map_err(|error| {
                 // Log the failure with its full context (messageId, bucket, key,
-                // recipient count) in our own structured line before returning it
-                // to the runtime.
-                tracing::error!(error = %error, "handler failed");
+                // recipient count) AND the underlying cause chain — the top-level
+                // Display does not walk `#[source]`, so the real reason (e.g. an
+                // S3 AccessDenied) would otherwise be lost.
+                tracing::error!(
+                    error = %error,
+                    cause_chain = %error_cause_chain(&error),
+                    "handler failed"
+                );
                 Error::from(error)
             })
     }))
     .await
+}
+
+/// Join an error with its `source()` chain into a single `a: b: c` string.
+fn error_cause_chain(error: &dyn std::error::Error) -> String {
+    let mut chain = error.to_string();
+    let mut current = error.source();
+    while let Some(cause) = current {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+        current = cause.source();
+    }
+    chain
 }
 
 /// Structured (JSON) logging. The level is read from `RUST_LOG`, defaulting to

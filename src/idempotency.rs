@@ -37,6 +37,14 @@ pub trait IdempotencyStore {
     async fn release(&self, message_id: &str) -> Result<(), BoxError>;
 }
 
+/// Whether a failed conditional put signals an existing marker (a duplicate).
+/// True when the HTTP status is `412` or the modeled error code is
+/// `PreconditionFailed`. Any other failure is a genuine error, so a real
+/// duplicate is never mistaken for success — the failure direction is safe.
+fn is_precondition_failed(status: Option<u16>, code: Option<&str>) -> bool {
+    status == Some(412) || code == Some("PreconditionFailed")
+}
+
 /// [`IdempotencyStore`] backed by S3 conditional writes. When `bucket` is
 /// `None` the store is disabled (every claim is `New`, release is a no-op).
 pub struct S3IdempotencyStore {
@@ -75,13 +83,15 @@ impl IdempotencyStore for S3IdempotencyStore {
         match result {
             Ok(_) => Ok(ClaimOutcome::New),
             Err(error) => {
+                use aws_sdk_s3::error::ProvideErrorMetadata;
                 // A `412 Precondition Failed` means the marker already exists —
                 // i.e. this message was already claimed, so it is a duplicate.
-                let precondition_failed = error
+                // Check both the HTTP status and the modeled error code.
+                let status = error
                     .raw_response()
-                    .map(|response| response.status().as_u16() == 412)
-                    .unwrap_or(false);
-                if precondition_failed {
+                    .map(|response| response.status().as_u16());
+                let code = error.code();
+                if is_precondition_failed(status, code) {
                     Ok(ClaimOutcome::AlreadyProcessed)
                 } else {
                     Err(error.into())
@@ -122,6 +132,20 @@ mod tests {
     #[test]
     fn marker_key_is_prefixed() {
         assert_eq!(S3IdempotencyStore::marker_key("abc"), "idempotency/abc");
+    }
+
+    #[test]
+    fn precondition_failed_is_detected_by_status_or_code() {
+        // 412 by HTTP status.
+        assert!(is_precondition_failed(Some(412), None));
+        // By modeled error code.
+        assert!(is_precondition_failed(None, Some("PreconditionFailed")));
+        // Either signal alone is enough.
+        assert!(is_precondition_failed(Some(412), Some("Something")));
+        // Any other failure is NOT a duplicate (fails safe -> real error).
+        assert!(!is_precondition_failed(Some(500), Some("InternalError")));
+        assert!(!is_precondition_failed(None, None));
+        assert!(!is_precondition_failed(Some(403), Some("AccessDenied")));
     }
 
     /// An S3 client built from static config — no network, no credential or

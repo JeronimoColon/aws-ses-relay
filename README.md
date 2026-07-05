@@ -180,15 +180,28 @@ function forwards it twice. Set `IDEMPOTENCY_BUCKET` to enable suppression:
   forward fails, the marker is deleted so a retry can re-process the message.
 - The marker bucket may be `EMAIL_BUCKET` itself or a **separate bucket** (a
   separate bucket keeps the mail bucket single-purpose).
-- Add an **S3 lifecycle rule** expiring the `idempotency/` prefix (e.g. after a
-  few days) so markers do not accumulate. The window only needs to exceed SES's
-  retry window.
+- Add an **S3 lifecycle rule** expiring the `idempotency/` prefix so markers do
+  not accumulate **and so an orphaned marker self-heals**. Choose an expiry that
+  comfortably exceeds SES's retry window but is not indefinite (e.g. a few days).
 - When `IDEMPOTENCY_BUCKET` is unset the function behaves as plain
   at-least-once — a duplicate delivery may forward twice.
 
-> A DynamoDB-backed store (with native TTL) is a reasonable future alternative;
-> the implementation isolates the store behind a trait so it can be swapped
-> without touching the handler.
+**Edge cases (this is at-least-once, not exactly-once).** The S3 single-marker
+store closes the common duplicate cases but has two documented limits:
+
+- **Ambiguous send → possible duplicate.** If SES accepts the message but the
+  response is lost, the send is seen as failed, the marker is released, and the
+  retry sends again. True exactly-once is not achievable at the SES boundary.
+- **Crash after claim → possible suppressed retry.** If the function is killed
+  after claiming but before sending (or the marker release itself fails during
+  an outage), the marker persists; SES's retry then sees it as a duplicate and
+  drops the message. The lifecycle-rule TTL above bounds this — once the marker
+  expires, the message can be replayed. Release failures are logged at
+  **error** level so they are alarmable.
+
+> A **DynamoDB-backed** store (native TTL, plus a two-state "claimed vs.
+> completed" marker) is the upgrade path to tighter guarantees; the store is
+> isolated behind a trait so it can be swapped without touching the handler.
 
 ## Build and deploy
 
@@ -266,7 +279,10 @@ day) — request increases before you need them. Beyond that:
 - **Logging.** The function logs message ids, recipient counts/addresses,
   verdicts, and decisions as JSON — never message bodies or the raw event. Keep
   `RUST_LOG` at `info` in production; `debug`/`trace` can make the AWS SDK emit
-  request metadata to CloudWatch.
+  request metadata to CloudWatch. Inbound recipient addresses (your own
+  verified-domain addresses) do appear in the logs, so set a **CloudWatch Logs
+  retention policy** on the function's log group rather than the default
+  never-expire.
 
 ## Limitations
 

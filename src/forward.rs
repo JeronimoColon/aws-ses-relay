@@ -440,15 +440,18 @@ fn build_rewritten_from(original_value: &[u8], from_email: &str, line_ending: &[
     field
 }
 
-/// Build a `Reply-To` field from the captured original `From` value, reusing
-/// the original bytes verbatim (folding and address preserved exactly).
+/// Build a `Reply-To` field from the captured original `From` value.
+///
+/// The value is unfolded first, which strips every CR and LF byte (folds become
+/// single spaces). That preserves the address while guaranteeing the reused,
+/// attacker-influenced bytes cannot carry a stray CR/LF into a header a lenient
+/// parser might split on.
 fn build_reply_to(from_value: &[u8], line_ending: &[u8]) -> Vec<u8> {
-    let mut field = Vec::with_capacity(from_value.len() + 16);
+    let unfolded = unfold_value(from_value);
+    let mut field = Vec::with_capacity(unfolded.len() + 16);
     field.extend_from_slice(b"Reply-To:");
-    field.extend_from_slice(from_value);
-    if field.last() != Some(&b'\n') {
-        field.extend_from_slice(line_ending);
-    }
+    field.extend_from_slice(&unfolded);
+    field.extend_from_slice(line_ending);
     field
 }
 
@@ -809,10 +812,23 @@ mod tests {
         let raw = b"From: Alice\r\n <alice@example.net>\r\nTo: info@example.com\r\n\r\nbody";
         let output = rewrite_message(raw, "relay@example.com", None).message;
         let text = String::from_utf8(output).unwrap();
-        // Reply-To preserves the original folded value verbatim.
-        assert!(text.contains("Reply-To: Alice\r\n <alice@example.net>\r\n"));
+        // Reply-To preserves the original address, unfolded onto one line.
+        assert!(text.contains("Reply-To: Alice <alice@example.net>\r\n"));
         // The rewritten From is unfolded onto one line with the display name.
         assert!(text.contains("From: Alice <relay@example.com>\r\n"));
+    }
+
+    #[test]
+    fn bare_cr_in_from_cannot_inject_a_header_via_reply_to() {
+        // A bare CR (not part of a CRLF) inside the From value must not survive
+        // into Reply-To where a lenient parser could treat it as a line break.
+        let raw = b"From: Alice\rBcc: attacker@evil.example <alice@example.net>\r\nTo: info@example.com\r\n\r\nbody";
+        let output = rewrite_message(raw, "relay@example.com", None).message;
+        // No CR may appear inside the synthesized Reply-To line, and there is no
+        // standalone Bcc header.
+        let text = String::from_utf8_lossy(&output);
+        assert!(!text.contains("\rBcc:"), "bare CR must be stripped");
+        assert!(!text.contains("\nBcc:"), "no injected Bcc header");
     }
 
     #[test]

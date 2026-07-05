@@ -35,11 +35,24 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Exactly what we hand to SES, captured as a plain value so tests can assert
 /// the outgoing request byte-for-byte.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SendRawEmailRequest {
     pub from_email_address: String,
     pub to_addresses: Vec<String>,
     pub raw_message: Vec<u8>,
+}
+
+// Custom Debug that never prints the raw message body — only its length — so a
+// stray `{:?}` on this value can never dump message content into a log.
+impl std::fmt::Debug for SendRawEmailRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SendRawEmailRequest")
+            .field("from_email_address", &self.from_email_address)
+            .field("to_addresses", &self.to_addresses)
+            .field("raw_message_len", &self.raw_message.len())
+            .finish()
+    }
 }
 
 /// The outcome of a size-bounded fetch.
@@ -66,9 +79,10 @@ pub trait MessageStore {
 }
 
 #[allow(async_fn_in_trait)]
-/// Sends a raw (already-encoded) email.
+/// Sends a raw (already-encoded) email. Takes the request by value so the
+/// (potentially ~30 MB) body is moved into the SDK, not copied.
 pub trait EmailSender {
-    async fn send_raw_email(&self, request: &SendRawEmailRequest) -> Result<(), BoxError>;
+    async fn send_raw_email(&self, request: SendRawEmailRequest) -> Result<(), BoxError>;
 }
 
 /// Everything that can go genuinely wrong while handling an event. Drops are
@@ -93,6 +107,11 @@ pub enum HandlerError {
          must carry both or neither"
     )]
     PartialS3Action,
+    #[error(
+        "event objectKey `{object_key}` is not a safe object key \
+         (empty, leading '/', a '..' segment, or control characters)"
+    )]
+    InvalidObjectKey { object_key: String },
     #[error(
         "event S3 bucket `{event_bucket}` does not match configured EMAIL_BUCKET \
          `{configured_bucket}`; refusing to read from an unlisted bucket"
@@ -147,12 +166,14 @@ where
     E: EmailSender,
     I: IdempotencyStore,
 {
-    // 1. Parse: exactly one record, from aws:ses.
+    // 1. Parse: exactly one record, from aws:ses. Absent/foreign source fails
+    //    closed (defense in depth behind the SES-scoped invoke policy).
     let record = single_record(&event)?;
-    if let Some(source) = record.event_source.as_deref() {
-        if !source.eq_ignore_ascii_case("aws:ses") {
+    match record.event_source.as_deref() {
+        Some(source) if source.eq_ignore_ascii_case("aws:ses") => {}
+        other => {
             return Err(HandlerError::SourceMismatch {
-                event_source: source.to_string(),
+                event_source: other.unwrap_or("<absent>").to_string(),
             });
         }
     }
@@ -162,40 +183,35 @@ where
     // 2. Verdict gate.
     let spam_verdict = receipt.spam_verdict.status.as_deref();
     let virus_verdict = receipt.virus_verdict.status.as_deref();
-    match evaluate_verdicts(
+    // Drift signal: a real-looking receipt with no verdicts at all suggests
+    // scanning is off or the event schema changed — surface it rather than let a
+    // silently-absent gate look like a clean PASS.
+    if !receipt.recipients.is_empty() && spam_verdict.is_none() && virus_verdict.is_none() {
+        warn!(
+            message_id = %message_id,
+            "receipt carries no spam or virus verdicts; scanning may be disabled \
+             on the rule or the event schema may have changed"
+        );
+    }
+    if let GateDecision::Drop(reason) = evaluate_verdicts(
         spam_verdict,
         virus_verdict,
         config.drop_spam,
         config.drop_unscanned,
     ) {
-        GateDecision::Drop(reason) => {
-            let reason = match reason {
-                DropReason::Virus => "virus verdict FAIL",
-                DropReason::Spam => "spam verdict FAIL with DROP_SPAM enabled",
-                DropReason::UnscannedVirus => {
-                    "virus verdict PROCESSING_FAILED with DROP_UNSCANNED enabled"
-                }
-            };
-            info!(
-                message_id = %message_id,
-                reason,
-                "dropping message per verdict gate (message remains in S3)"
-            );
-            return Ok(());
-        }
-        GateDecision::Forward => {
-            // Fail-open forward: make a bypassed/inconclusive scan visible and
-            // alarmable rather than silent (it reads the same as a clean PASS).
-            if verdict_is_concerning(virus_verdict) || verdict_is_concerning(spam_verdict) {
-                warn!(
-                    message_id = %message_id,
-                    spam_verdict = ?spam_verdict,
-                    virus_verdict = ?virus_verdict,
-                    "forwarding despite a non-PASS spam/virus verdict; \
-                     scanning may be inconclusive or disabled on the receipt rule"
-                );
+        let reason = match reason {
+            DropReason::Virus => "virus verdict FAIL",
+            DropReason::Spam => "spam verdict FAIL with DROP_SPAM enabled",
+            DropReason::UnscannedVirus => {
+                "virus verdict PROCESSING_FAILED with DROP_UNSCANNED enabled"
             }
-        }
+        };
+        info!(
+            message_id = %message_id,
+            reason,
+            "dropping message per verdict gate (message remains in S3)"
+        );
+        return Ok(());
     }
 
     // 3. Resolve destinations. A no-match is a drop with zero downstream calls.
@@ -211,6 +227,19 @@ where
             "no destination matched any recipient; dropping (no S3/SES calls)"
         );
         return Ok(());
+    }
+
+    // We are actually going to forward now. A fail-open forward (a verdict that
+    // is present but not PASS/DISABLED) is logged here — after the match — so
+    // the warning only fires for messages we really send on.
+    if verdict_is_concerning(virus_verdict) || verdict_is_concerning(spam_verdict) {
+        warn!(
+            message_id = %message_id,
+            spam_verdict = ?spam_verdict,
+            virus_verdict = ?virus_verdict,
+            "forwarding despite a non-PASS spam/virus verdict; \
+             scanning may be inconclusive or disabled on the receipt rule"
+        );
     }
 
     // 4. We are going to forward: require a usable messageId (it keys both the
@@ -247,11 +276,16 @@ where
         forward_message(&message_id, receipt, config, store, sender, resolved).await;
     if forward_result.is_err() {
         if let Err(release_error) = idempotency.release(&message_id).await {
-            warn!(
+            // A stuck marker will make SES's retry look like a duplicate and drop
+            // the message — a silent-loss risk — so this is error-level, not a
+            // warning. A short lifecycle-rule TTL on the marker prefix lets it
+            // self-heal (see the README).
+            tracing::error!(
                 message_id = %message_id,
                 error = %release_error,
-                "failed to release idempotency marker after a processing error; \
-                 a retry of this message may be suppressed"
+                "FAILED to release idempotency marker after a processing error; \
+                 the stored marker may suppress the retry of this message until it \
+                 expires (ensure a lifecycle-rule TTL is configured)"
             );
         }
     }
@@ -315,8 +349,9 @@ where
         raw_message: rewrite.message,
     };
     let recipient_count = request.to_addresses.len();
+    // Moved (not cloned) into the sender so the ~30 MB body is not copied.
     sender
-        .send_raw_email(&request)
+        .send_raw_email(request)
         .await
         .map_err(|source| HandlerError::Ses {
             message_id: message_id.to_string(),
@@ -378,11 +413,29 @@ fn resolve_s3_location(
                     configured_bucket: config.email_bucket.clone(),
                 });
             }
+            // Validate the event-supplied key the same way the fallback path
+            // validates the messageId — an invoker must not be able to point the
+            // fetch at an arbitrary object via a crafted objectKey.
+            if !is_safe_object_key(object_key) {
+                return Err(HandlerError::InvalidObjectKey {
+                    object_key: object_key.clone(),
+                });
+            }
             Ok((event_bucket.clone(), object_key.clone()))
         }
         (None, None) => Ok((config.email_bucket.clone(), message_id.to_string())),
         _ => Err(HandlerError::PartialS3Action),
     }
+}
+
+/// A defensively-safe S3 object key: non-empty, bounded, no control characters,
+/// no leading `/`, and no `..` path segment.
+fn is_safe_object_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 1024
+        && !key.starts_with('/')
+        && !key.chars().any(|character| character.is_control())
+        && !key.split('/').any(|segment| segment == "..")
 }
 
 // ---------------------------------------------------------------------------
@@ -426,10 +479,12 @@ impl MessageStore for S3MessageStore {
         }
 
         // Collect to bytes — never a lossy UTF-8 string — so non-UTF-8 mail is
-        // preserved exactly.
+        // preserved exactly. S3 GetObject responses always carry Content-Length,
+        // so the pre-download check above is the effective memory bound; this
+        // second check only covers the rare case of an absent/incorrect length,
+        // in which the body has already been buffered.
         let aggregated = output.body.collect().await?;
         let bytes = aggregated.into_bytes();
-        // Belt-and-braces if Content-Length was absent or wrong.
         if bytes.len() > max_bytes {
             return Ok(FetchResult::TooLarge {
                 size: bytes.len() as u64,
@@ -451,21 +506,22 @@ impl SesEmailSender {
 }
 
 impl EmailSender for SesEmailSender {
-    async fn send_raw_email(&self, request: &SendRawEmailRequest) -> Result<(), BoxError> {
+    async fn send_raw_email(&self, request: SendRawEmailRequest) -> Result<(), BoxError> {
         use aws_sdk_sesv2::primitives::Blob;
         use aws_sdk_sesv2::types::{Destination, EmailContent, RawMessage};
 
+        // Move the body into the Blob rather than cloning it.
         let raw = RawMessage::builder()
-            .data(Blob::new(request.raw_message.clone()))
+            .data(Blob::new(request.raw_message))
             .build()?;
         let content = EmailContent::builder().raw(raw).build();
         let destination = Destination::builder()
-            .set_to_addresses(Some(request.to_addresses.clone()))
+            .set_to_addresses(Some(request.to_addresses))
             .build();
 
         self.client
             .send_email()
-            .from_email_address(&request.from_email_address)
+            .from_email_address(request.from_email_address)
             .destination(destination)
             .content(content)
             .send()
@@ -563,8 +619,8 @@ mod tests {
     }
 
     impl EmailSender for FakeSender {
-        async fn send_raw_email(&self, request: &SendRawEmailRequest) -> Result<(), BoxError> {
-            self.requests.lock().unwrap().push(request.clone());
+        async fn send_raw_email(&self, request: SendRawEmailRequest) -> Result<(), BoxError> {
+            self.requests.lock().unwrap().push(request);
             if self.fail {
                 return Err("simulated SES failure".into());
             }
@@ -923,6 +979,52 @@ mod tests {
             ),
             "uses the event's bucket and object key when provided"
         );
+    }
+
+    #[tokio::test]
+    async fn hostile_s3_action_object_key_is_rejected() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        // Correct bucket, but a traversal-shaped object key.
+        let action = s3_action("inbound-bucket-example", "../secrets/private");
+        let event = event(&["info@example.com"], "PASS", "PASS", "msg-1", &action);
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("unsafe object key must be rejected");
+        assert!(matches!(error, HandlerError::InvalidObjectKey { .. }));
+        assert_eq!(store.call_count(), 0, "never fetch with an unsafe key");
+    }
+
+    #[tokio::test]
+    async fn absent_event_source_errors() {
+        let config = test_config();
+        let store = FakeStore::returning(b"unused");
+        let sender = FakeSender::new();
+        let idempotency = FakeIdempotency::new();
+        // A single record with no eventSource field must fail closed.
+        let json = r#"{
+          "Records": [{
+            "ses": {
+              "mail": { "messageId": "m1" },
+              "receipt": {
+                "recipients": ["info@example.com"],
+                "spamVerdict": { "status": "PASS" },
+                "virusVerdict": { "status": "PASS" },
+                "action": { "type": "Lambda" }
+              }
+            }
+          }]
+        }"#;
+        let event: SesEvent = serde_json::from_str(json).unwrap();
+
+        let error = handle_event(event, &config, &store, &sender, &idempotency)
+            .await
+            .expect_err("absent eventSource must fail closed");
+        assert!(matches!(error, HandlerError::SourceMismatch { .. }));
+        assert_eq!(store.call_count(), 0);
     }
 
     #[tokio::test]

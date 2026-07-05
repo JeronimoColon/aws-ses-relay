@@ -168,6 +168,12 @@ fn validate_email(name: &str, value: String, problems: &mut Vec<String>) -> Opti
         ));
         return None;
     }
+    if value.contains('<') || value.contains('>') {
+        problems.push(format!(
+            "{name} must be a bare address without angle brackets; got `{value}`"
+        ));
+        return None;
+    }
 
     let parts: Vec<&str> = value.split('@').collect();
     let looks_like_email = parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty();
@@ -194,7 +200,7 @@ fn parse_optional_bool(
     let Some(raw) = vars.get(name) else {
         return default;
     };
-    match raw.to_ascii_lowercase().as_str() {
+    match raw.trim().to_ascii_lowercase().as_str() {
         "true" => true,
         "false" => false,
         _ => {
