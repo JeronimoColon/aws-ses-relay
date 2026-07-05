@@ -42,10 +42,26 @@ jobs:
       - name: Test
         run: cargo test --verbose
 
-      # Install cargo-lambda and Zig. `--break-system-packages` satisfies
-      # PEP 668 on the runner's externally managed Python.
+      # Install cargo-lambda and Zig with pinned versions (bump as needed).
+      # `--break-system-packages` satisfies PEP 668 on the runner's externally
+      # managed Python.
       - name: Install cargo-lambda and Zig
-        run: pip3 install --break-system-packages cargo-lambda ziglang
+        run: pip3 install --break-system-packages 'cargo-lambda==1.9.1' 'ziglang==0.14.0'
 
       - name: Cross-compile for Lambda (ARM64) — proves it builds for the runtime
         run: cargo lambda build --release --arm64
+
+  audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: cargo audit (RustSec advisory database)
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

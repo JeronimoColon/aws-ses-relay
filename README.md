@@ -54,11 +54,16 @@ rule.
 1. **Verify your domain in SES** and publish the **MX record** it gives you so
    inbound mail is routed to SES.
 
-2. **Create the S3 bucket** SES will write to. Keep **Object Ownership =
-   "Bucket owner enforced"** (the default) — this function uses no ACLs and
-   relies on that setting. **Do not enable KMS encryption on the receipt rule's
-   S3 action**: SES would envelope-encrypt the object, and a plain `GetObject`
-   would return ciphertext. (SSE-S3 / bucket default encryption is fine.)
+2. **Create the S3 bucket** SES will write to. This bucket holds complete raw
+   inbound emails, so treat it as sensitive:
+   - Keep **Object Ownership = "Bucket owner enforced"** (the default) — this
+     function uses no ACLs and relies on that setting.
+   - Enable **S3 Block Public Access** on the bucket.
+   - Add a bucket policy statement that **denies any request with
+     `aws:SecureTransport = false`** (TLS-only access).
+   - At-rest encryption: **SSE-S3** (the account default) is the intended
+     control. **Do not enable KMS on the receipt rule's S3 action** — SES would
+     envelope-encrypt the object and a plain `GetObject` would return ciphertext.
 
 3. **Add a bucket policy** that lets SES write to the bucket. AWS provides the
    exact policy when you add the S3 action; it grants `s3:PutObject` to
@@ -82,12 +87,13 @@ cold start and reports **every** problem at once.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `FROM_EMAIL` | yes | — | The verified-domain address all forwarded mail is sent as. |
+| `FROM_EMAIL` | yes | — | The verified-domain address all forwarded mail is sent as. Rejected at startup if it contains whitespace or control characters. |
 | `EMAIL_BUCKET` | yes | — | The S3 bucket SES writes inbound mail to. Also an allowlist: the function refuses to read from any other bucket. |
-| `FORWARD_MAPPING` | yes | — | JSON object mapping match keys to non-empty arrays of destination addresses (see below). |
-| `SUBJECT_PREFIX` | no | none | Prepended to the `Subject` when non-empty (e.g. `"[EXT] "` — include the trailing space you want). |
+| `FORWARD_MAPPING` | yes | — | JSON object mapping match keys to non-empty arrays of destination addresses (see below). A single key may map to at most 50 destinations (the SES per-send cap). |
+| `SUBJECT_PREFIX` | no | none | Prepended to the `Subject` when non-empty (e.g. `"[EXT] "` — include the trailing space you want). Rejected at startup if it contains control characters. |
 | `ALLOW_PLUS_SIGN` | no | `true` | When `true`, a `+tag` suffix on the recipient mailbox is stripped before matching (`info+sales@…` matches as `info@…`). Accepts only `true`/`false`, case-insensitive. |
 | `DROP_SPAM` | no | `false` | When `true`, messages whose spam verdict is `FAIL` are dropped. Accepts only `true`/`false`, case-insensitive. |
+| `IDEMPOTENCY_BUCKET` | no | none | When set, enables duplicate suppression (see [Idempotency](#idempotency)). Markers are written to this bucket; it may be `EMAIL_BUCKET` or a separate bucket. |
 
 ### `FORWARD_MAPPING`
 
@@ -131,6 +137,49 @@ The function's execution role needs only:
 - **CloudWatch Logs** write (`logs:CreateLogGroup`, `logs:CreateLogStream`,
   `logs:PutLogEvents`) — covered by the AWS-managed
   `AWSLambdaBasicExecutionRole`.
+- If idempotency is enabled: **`s3:PutObject`** and **`s3:DeleteObject`** on the
+  `idempotency/*` prefix of `IDEMPOTENCY_BUCKET`.
+
+### Who may invoke the function
+
+The execution role above governs what the function *does*. Equally important is
+who may *trigger* it — the function's resource-based (invoke) policy. The
+handler trusts any well-formed event it receives, so scope invocation tightly:
+grant SES permission and nothing else.
+
+```sh
+aws lambda add-permission \
+  --function-name aws-ses-relay \
+  --statement-id AllowSESInvoke \
+  --action lambda:InvokeFunction \
+  --principal ses.amazonaws.com \
+  --source-account YOUR_ACCOUNT_ID \
+  --source-arn arn:aws:ses:REGION:YOUR_ACCOUNT_ID:receipt-rule-set/RULE_SET:receipt-rule/RULE
+```
+
+Do not grant `lambda:InvokeFunction` to any other principal.
+
+## Idempotency
+
+SES invokes Lambda **at least once**: a lost response or a termination after a
+successful send can deliver the same message twice, and without protection the
+function forwards it twice. Set `IDEMPOTENCY_BUCKET` to enable suppression:
+
+- On each message the function conditionally creates a marker object at
+  `idempotency/<messageId>` using S3's atomic `If-None-Match` write. A duplicate
+  finds the marker already present and is skipped (a drop, not an error). If the
+  forward fails, the marker is deleted so a retry can re-process the message.
+- The marker bucket may be `EMAIL_BUCKET` itself or a **separate bucket** (a
+  separate bucket keeps the mail bucket single-purpose).
+- Add an **S3 lifecycle rule** expiring the `idempotency/` prefix (e.g. after a
+  few days) so markers do not accumulate. The window only needs to exceed SES's
+  retry window.
+- When `IDEMPOTENCY_BUCKET` is unset the function behaves as plain
+  at-least-once — a duplicate delivery may forward twice.
+
+> A DynamoDB-backed store (with native TTL) is a reasonable future alternative;
+> the implementation isolates the store behind a trait so it can be swapped
+> without touching the handler.
 
 ## Build and deploy
 
@@ -163,7 +212,30 @@ mail:
   queue) on the function's async invocation config, **or** at minimum a
   **CloudWatch alarm** on the function's `Errors` metric.
 - To **replay** a failed message, re-invoke the function with an event that
-  points at the stored S3 object (the object key is the message's `messageId`).
+  points at the stored S3 object. The event is parsed leniently — only the
+  fields the function uses need be present — so a **minimal replay event** is
+  enough:
+
+  ```json
+  {
+    "Records": [{
+      "eventSource": "aws:ses",
+      "ses": {
+        "mail": { "messageId": "THE_MESSAGE_ID" },
+        "receipt": {
+          "recipients": ["info@example.com"],
+          "spamVerdict": { "status": "PASS" },
+          "virusVerdict": { "status": "PASS" },
+          "action": { "type": "Lambda" }
+        }
+      }
+    }]
+  }
+  ```
+
+  The object key is the message's `messageId`. Every event must carry a
+  non-empty `messageId` made of letters, digits, `.`, `_`, or `-` (SES message
+  ids satisfy this); the function rejects a missing or malformed one.
 
 ## Scaling to high volume
 
@@ -173,8 +245,8 @@ day) — request increases before you need them. Beyond that:
 - Add a dead-letter queue so nothing is lost on failure.
 - Optionally put an **SQS queue in front** of the function to smooth spikes and
   cap concurrency.
-- Add **idempotency** if duplicate deliveries would matter (SES async invokes
-  are at-least-once).
+- Enable [idempotency](#idempotency) if duplicate deliveries would matter (SES
+  async invokes are at-least-once).
 - Tune memory for cost once you have real numbers.
 
 ## Operations
