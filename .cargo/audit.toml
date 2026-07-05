@@ -1,0 +1,25 @@
+# cargo-audit configuration.
+#
+# Accepted-risk advisory ignores. Every entry below is a SPECIFIC advisory ID,
+# never a blanket crate exclusion, so any new or different advisory in the same
+# crate still fails the audit. Revisit whenever the AWS SDK dependency tree
+# changes.
+#
+# All three IDs below are the same transitive crate: rustls-webpki 0.101.7. It is
+# pulled in by aws-smithy-http-client (the AWS SDK's HTTP layer) through its
+# dependency on the old hyper-rustls 0.24 -> rustls 0.21. As of this writing,
+# aws-smithy-http-client 1.1.13 is the latest published version and still pins
+# that chain, so the advisory cannot be resolved by a version bump today.
+#
+# The affected code is rustls-webpki's SERVER-side certificate handling
+# (certificate-revocation-list parsing and name-constraint checks). This Lambda
+# is a TLS *client* connecting to AWS endpoints, so that server-side path is not
+# exercised at runtime. Remove these ignores once the AWS SDK ships an HTTP layer
+# that drops rustls 0.21 / hyper-rustls 0.24.
+
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0098", # rustls-webpki: name constraints for URI names incorrectly accepted (server-side)
+    "RUSTSEC-2026-0099", # rustls-webpki: name constraints accepted for wildcard-name certs (server-side)
+    "RUSTSEC-2026-0104", # rustls-webpki: reachable panic in certificate-revocation-list parsing (server-side)
+]
