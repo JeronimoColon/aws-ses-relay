@@ -19,7 +19,6 @@ strip = true
 aws-config = "1.8.18"
 aws-sdk-s3 = "1.137.0"
 aws-sdk-sesv2 = "1.123.0"
-aws_lambda_events = { version = "1.2.0", default-features = false, features = ["ses"] }
 lambda_runtime = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
