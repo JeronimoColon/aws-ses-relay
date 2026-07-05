@@ -38,7 +38,13 @@ async fn main() -> Result<(), Error> {
     run(service_fn(|event: LambdaEvent<SesEvent>| async {
         handle_event(event.payload, &config, &store, &sender, &idempotency)
             .await
-            .map_err(Error::from)
+            .map_err(|error| {
+                // Log the failure with its full context (messageId, bucket, key,
+                // recipient count) in our own structured line before returning it
+                // to the runtime.
+                tracing::error!(error = %error, "handler failed");
+                Error::from(error)
+            })
     }))
     .await
 }

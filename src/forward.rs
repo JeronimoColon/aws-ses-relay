@@ -406,7 +406,8 @@ fn value_after_colon(field_bytes: &[u8]) -> Vec<u8> {
     }
 }
 
-/// Detect the dominant line ending of the header block. Defaults to LF.
+/// Detect the line ending to use for synthesized headers, from the first line
+/// terminator in the header block. Defaults to LF.
 fn detect_line_ending(header_block: &[u8]) -> &'static [u8] {
     match header_block.iter().position(|&byte| byte == b'\n') {
         Some(newline_index) if newline_index > 0 && header_block[newline_index - 1] == b'\r' => {

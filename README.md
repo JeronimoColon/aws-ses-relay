@@ -263,6 +263,10 @@ day) — request increases before you need them. Beyond that:
 - Add an **S3 lifecycle rule** to expire stored mail after a retention period
   you choose. Dropped spam/virus mail also remains in the bucket, so lifecycle
   expiry is how you keep storage bounded.
+- **Logging.** The function logs message ids, recipient counts/addresses,
+  verdicts, and decisions as JSON — never message bodies or the raw event. Keep
+  `RUST_LOG` at `info` in production; `debug`/`trace` can make the AWS SDK emit
+  request metadata to CloudWatch.
 
 ## Limitations
 
