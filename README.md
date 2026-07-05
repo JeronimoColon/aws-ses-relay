@@ -244,6 +244,16 @@ you create manually.
 - **Memory:** 256–512 MB (headroom for a large message held as bytes).
 - **Timeout:** ~30 seconds.
 
+## Releases
+
+Pushing a `v*` tag runs the release workflow (`.github/workflows/release.yml`),
+which gates on `cargo test`, cross-compiles the ARM64 binary, packages
+`bootstrap-arm64.zip`, and attaches it (with a SHA-256 checksum) to a GitHub
+Release for that tag. Tags containing a hyphen (for example `v0.1.0-rc.1`) are
+published as pre-releases. Download the deployment package with:
+
+    gh release download <tag> --pattern 'bootstrap-arm64.zip'
+
 ## Failure handling
 
 SES invokes Lambda **asynchronously**: on failure it retries twice and then
