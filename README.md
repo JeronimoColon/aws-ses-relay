@@ -203,6 +203,26 @@ store closes the common duplicate cases but has two documented limits:
 > completed" marker) is the upgrade path to tighter guarantees; the store is
 > isolated behind a trait so it can be swapped without touching the handler.
 
+## Testing
+
+Unit tests live inline in each module (`#[cfg(test)]`), so no extra setup is
+needed:
+
+```sh
+cargo test
+```
+
+CI also enforces a line-coverage floor. To reproduce that check locally, install
+the tooling once (`rustup component add llvm-tools-preview`, then `brew install
+cargo-llvm-cov` or `cargo install cargo-llvm-cov`), then run:
+
+```sh
+# Fails if line coverage drops below 90%. src/main.rs (the Lambda bootstrap
+# wiring) is excluded: it needs the live runtime and is exercised by an
+# integration/container test, not unit tests. Everything else runs ~94%.
+cargo llvm-cov --fail-under-lines 90 --ignore-filename-regex 'main\.rs$'
+```
+
 ## Build and deploy
 
 ```sh
