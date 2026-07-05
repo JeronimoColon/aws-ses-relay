@@ -299,6 +299,12 @@ aws lambda invoke --function-name aws-ses-relay --region YOUR_REGION \
   --cli-binary-format raw-in-base64-out --payload file://replay-event.json /dev/stdout
 ```
 
+> If duplicate suppression is enabled and this message's marker still exists (it
+> was already forwarded, or its TTL hasn't elapsed), the replay is treated as a
+> duplicate and does nothing (returns success, sends nothing). Delete
+> `idempotency/<messageId>` from the marker bucket, or wait out the TTL, before
+> replaying.
+
 ## Step 10 — Operational hardening
 
 ```sh
@@ -358,11 +364,23 @@ aws lambda update-function-configuration --function-name aws-ses-relay \
   --environment '{"Variables":{"FROM_EMAIL":"relay@YOUR_DOMAIN","EMAIL_BUCKET":"YOUR_INBOUND_BUCKET","FORWARD_MAPPING":"{\"@YOUR_DOMAIN\":[\"you@example.net\"]}","IDEMPOTENCY_BUCKET":"YOUR_IDEMPOTENCY_BUCKET"}}'
 
 # 4. Expire markers so an orphaned one self-heals (a few days, comfortably past
-#    the SES retry window). Apply to the marker bucket (or the inbound bucket if
-#    you reused it).
+#    the SES retry window). This applies to the SEPARATE marker bucket.
 aws s3api put-bucket-lifecycle-configuration --bucket YOUR_IDEMPOTENCY_BUCKET \
   --lifecycle-configuration file://deploy/s3/lifecycle-idempotency.json
 ```
+
+> **Reusing the inbound bucket for markers?** `put-bucket-lifecycle-configuration`
+> **replaces** a bucket's entire lifecycle configuration — so applying the
+> markers-only file to the inbound bucket would erase the 30-day mail-expiry rule
+> from Step 10, leaving raw email stored forever. For a single shared bucket,
+> **skip** both separate lifecycle applies and apply the combined file once (it
+> carries both rules; where an object matches both, S3 uses the sooner, 4-day
+> expiry):
+>
+> ```sh
+> aws s3api put-bucket-lifecycle-configuration --bucket YOUR_INBOUND_BUCKET \
+>   --lifecycle-configuration file://deploy/s3/lifecycle-combined.json
+> ```
 
 ## Updating later
 

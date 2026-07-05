@@ -148,13 +148,15 @@ The function's execution role needs only:
 
 - **`s3:GetObject`** on the inbound objects, e.g.
   `arn:aws:s3:::YOUR_INBOUND_BUCKET/*` (scope to your key prefix if you use one).
-- **`ses:SendEmail`** *and* **`ses:SendRawEmail`** on
-  `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/*`.
+- **`ses:SendEmail`** on `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/*`.
+  The function uses the SESv2 `SendEmail` API with a raw message, which is
+  authorized by `ses:SendEmail` alone — `ses:SendRawEmail` is the legacy SESv1
+  action and is **not** needed.
 
-  > While SES is in the **sandbox**, a send is authorized against the verified
-  > *recipient* identity as well, so scoping to a single sender identity fails
-  > with `AccessDenied`. Scoping to `identity/*` avoids that; tighten it once
-  > you are out of the sandbox if you wish.
+  > `identity/*` is a permissive resource. To tighten it, scope to your verified
+  > identity's ARN — for a **domain** identity that is
+  > `arn:aws:ses:YOUR_REGION:YOUR_ACCOUNT_ID:identity/YOUR_DOMAIN`, which
+  > authorizes sending as any address at that domain, including `FROM_EMAIL`.
 
 - **CloudWatch Logs** write (`logs:CreateLogGroup`, `logs:CreateLogStream`,
   `logs:PutLogEvents`) — covered by the AWS-managed
@@ -260,6 +262,11 @@ cargo lambda deploy \
   --env-var 'FORWARD_MAPPING={"@example.com":["you@example.net"]}'
 ```
 
+The single-destination `FORWARD_MAPPING` above has no commas. For a realistic
+mapping (multiple destinations or keys), the `aws lambda` + `--environment` JSON
+form in [docs/DEPLOY.md](docs/DEPLOY.md) encodes the value unambiguously and is
+the authoritative path.
+
 - **Runtime:** `provided.al2023` (OS-only). **Architecture:** ARM64 (Graviton).
 - **Memory:** 256–512 MB (headroom for a large message held as bytes).
 - **Timeout:** ~30 seconds.
@@ -315,6 +322,11 @@ mail:
   The object key is the message's `messageId`. Every event must carry a
   non-empty `messageId` made of letters, digits, `.`, `_`, or `-` (SES message
   ids satisfy this); the function rejects a missing or malformed one.
+
+  With idempotency enabled, a replay of a message whose marker still exists is
+  treated as a duplicate — it returns success and sends nothing. Delete
+  `idempotency/<messageId>` from the marker bucket, or wait out its TTL, before
+  replaying.
 
 ## Scaling to high volume
 
