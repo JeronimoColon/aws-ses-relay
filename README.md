@@ -1,6 +1,8 @@
 # aws-ses-relay
 
 [![CI](https://github.com/JeronimoColon/aws-ses-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/JeronimoColon/aws-ses-relay/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/JeronimoColon/aws-ses-relay/actions/workflows/codeql.yml/badge.svg)](https://github.com/JeronimoColon/aws-ses-relay/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/JeronimoColon/aws-ses-relay?sort=semver)](https://github.com/JeronimoColon/aws-ses-relay/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A single AWS Lambda function, written in Rust, that forwards inbound email
