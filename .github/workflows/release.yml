@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Needed to create the GitHub Release and upload assets.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish the release artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust (stable) with the Lambda target
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Test - gate the release on a green build
+        run: cargo test --locked
+
+      # `--break-system-packages` satisfies PEP 668 on the runner's externally
+      # managed Python. Pinned versions; bump as needed.
+      - name: Install cargo-lambda and Zig
+        run: pip3 install --break-system-packages 'cargo-lambda==1.9.1' 'ziglang==0.14.0'
+
+      # ARM64 (Graviton) is the project's documented target. To also ship an
+      # x86_64 artifact, add a second `cargo lambda build --release` (its default
+      # target), zip that bootstrap, and upload it alongside the arm64 zip below.
+      - name: Cross-compile the release binary (ARM64)
+        run: cargo lambda build --release --arm64 --locked
+
+      - name: Package the deployment zip and checksum
+        run: |
+          cd target/lambda/bootstrap
+          zip -X "$GITHUB_WORKSPACE/bootstrap-arm64.zip" bootstrap
+          cd "$GITHUB_WORKSPACE"
+          sha256sum bootstrap-arm64.zip > SHA256SUMS.txt
+
+      - name: Publish to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Any tag containing a hyphen (e.g. v0.1.0-rc.1) is a pre-release.
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          # Create the release if it does not exist yet, then attach the assets.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes $prerelease
+          fi
+          gh release upload "$TAG" bootstrap-arm64.zip SHA256SUMS.txt --clobber

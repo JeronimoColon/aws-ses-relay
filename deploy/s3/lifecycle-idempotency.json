@@ -1,0 +1,10 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-idempotency-markers",
+      "Filter": { "Prefix": "idempotency/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 4 }
+    }
+  ]
+}

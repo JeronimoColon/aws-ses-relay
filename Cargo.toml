@@ -1,0 +1,36 @@
+[package]
+name = "aws-ses-relay"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AWS Lambda that forwards inbound SES email to configured destinations."
+readme = "README.md"
+
+[[bin]]
+name = "bootstrap"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[dependencies]
+aws-config = "1.8.18"
+aws-sdk-s3 = "1.137.0"
+aws-sdk-sesv2 = "1.123.0"
+lambda_runtime = "1.2.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["macros", "rt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+
+[dev-dependencies]
+# Test-only. Lets the idempotency tests run the real S3 claim/release paths
+# against a replayed HTTP layer (StaticReplayClient) instead of live AWS. None
+# of these are compiled into the release Lambda binary.
+aws-smithy-runtime = { version = "1", features = ["client", "test-util"] }
+aws-smithy-types = "1"
+http = "1"

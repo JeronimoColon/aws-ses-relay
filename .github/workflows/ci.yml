@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: this workflow only reads the repository.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test-lint:
+    name: Build, test, lint, cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust (stable) with clippy, rustfmt, and the Lambda target
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --locked --verbose
+
+      - name: Test
+        run: cargo test --locked --verbose
+
+      # Install cargo-lambda and Zig with pinned versions (bump as needed).
+      # `--break-system-packages` satisfies PEP 668 on the runner's externally
+      # managed Python.
+      - name: Install cargo-lambda and Zig
+        run: pip3 install --break-system-packages 'cargo-lambda==1.9.1' 'ziglang==0.14.0'
+
+      - name: Cross-compile for Lambda (ARM64) - proves it builds for the runtime
+        run: cargo lambda build --release --arm64
+
+  coverage:
+    name: Test coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust (stable) with the LLVM coverage tools
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@c93ccc03e00cd0e08e494f5fd058a6c55a6a1907 # v2.82.8
+        with:
+          tool: cargo-llvm-cov
+
+      # Fail the build if line coverage drops below 90%. src/main.rs (the Lambda
+      # bootstrap/wiring) is excluded: it needs the live runtime and is covered by
+      # the container test, not unit tests. Everything else measures ~94% today.
+      - name: Coverage gate (fail under 90% lines)
+        run: cargo llvm-cov --locked --fail-under-lines 90 --ignore-filename-regex 'main\.rs$'
+
+  audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@c93ccc03e00cd0e08e494f5fd058a6c55a6a1907 # v2.82.8
+        with:
+          tool: cargo-audit
+
+      # Scans Cargo.lock against the RustSec advisory database. Fails on any
+      # advisory except the specific IDs documented, with rationale, in
+      # .cargo/audit.toml. Those ignores are per-advisory-ID, so a new or
+      # different advisory still fails the build. Needs only read access
+      # (inherited from the top-level permissions above).
+      - name: cargo audit
+        run: cargo audit

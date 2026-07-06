@@ -1,0 +1,11 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-inbound-mail",
+      "Filter": { "Prefix": "" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 30 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}
