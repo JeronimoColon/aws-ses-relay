@@ -102,3 +102,26 @@ jobs:
       # (inherited from the top-level permissions above).
       - name: cargo audit
         run: cargo audit
+
+  deny:
+    name: Supply-chain policy (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@c93ccc03e00cd0e08e494f5fd058a6c55a6a1907 # v2.82.8
+        with:
+          tool: cargo-deny
+
+      # Enforces the supply-chain policy in deny.toml: permissive licenses only
+      # (one documented LGPL exception for the UEFI-only r-efi crate), crates.io
+      # as the only source, no banned crates, and the accepted-risk advisories.
+      - name: cargo deny check
+        run: cargo deny check

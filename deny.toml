@@ -1,0 +1,49 @@
+# cargo-deny configuration. Run: cargo deny check
+#
+# Supply-chain policy for the dependency tree: permissive licenses only,
+# crates.io as the only source, and the same accepted-risk advisories that
+# .cargo/audit.toml documents.
+
+[licenses]
+# Every crate in the tree resolves to one of these permissive licenses.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# r-efi is LGPL-2.1-or-later, but it is a UEFI-target-only transitive dependency
+# (pulled in via getrandom/wasi) that is never compiled into this aarch64-linux
+# Lambda binary, so it carries no copyleft obligation for the shipped artifact.
+[[licenses.exceptions]]
+name = "r-efi"
+allow = ["LGPL-2.1-or-later"]
+
+[advisories]
+# Accepted-risk advisories, kept in sync with .cargo/audit.toml. All three are in
+# rustls-webpki 0.101.7 (transitive via the AWS SDK's HTTP layer). The affected
+# code is server-side certificate handling; this Lambda is a TLS client, so it is
+# not exercised. No upstream fix exists yet; remove when the SDK drops rustls 0.21.
+ignore = [
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]
+
+[bans]
+# The AWS SDK pulls in a few duplicate crate majors (e.g. two rustls lines); they
+# coexist without conflict, so duplicates are allowed rather than failing the build.
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
