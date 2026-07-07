@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>social preview render</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  #shot { width: 2560px; height: 1280px; overflow: hidden; }
+  .card {
+    width: 1280px; height: 640px;
+    transform: scale(2);
+    transform-origin: top left;
+    background: #0d1117;
+    padding: 64px;
+    display: flex;
+    flex-direction: column;
+  }
+  .titleRow { display: flex; align-items: center; gap: 26px; }
+  .mark {
+    width: 76px; height: 76px; border-radius: 18px;
+    background: #1f6feb; border: 1.5px solid #388bfd;
+    display: flex; align-items: center; justify-content: center;
+    font-family: Georgia, serif; font-size: 44px; color: rgba(255,255,255,.92);
+  }
+  .name { font-size: 62px; font-weight: 700; letter-spacing: -1px; color: #e6edf3; }
+  .tagline { margin-top: 26px; font-size: 26px; line-height: 1.4; color: #9198a1; max-width: 1020px; }
+  .verdict {
+    margin-top: 20px; align-self: flex-start;
+    padding: 9px 20px; border-radius: 999px;
+    background: #2b2111; border: 1.25px solid #d29922;
+    font-size: 17px; font-weight: 500; color: #e3b341;
+  }
+  .diagram { margin-top: 36px; }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  .chipsRow { margin-top: auto; display: flex; align-items: center; gap: 14px; }
+  .chip {
+    padding: 8px 18px; border-radius: 999px;
+    background: #161b22; border: 1.25px solid #3d444d;
+    font-size: 16px; font-weight: 500; color: #9198a1;
+  }
+  .repoUrl {
+    margin-left: auto;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 16px; color: #9198a1;
+  }
+  .card svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  .card svg .box { fill: #161b22; stroke: #3d444d; stroke-width: 1.5; }
+  .card svg .accent { fill: #1f6feb; stroke: #388bfd; stroke-width: 1.5; }
+  .card svg .t { font-size: 15px; font-weight: 600; fill: #e6edf3; }
+  .card svg .sub { font-size: 11.5px; fill: #9198a1; }
+  .card svg .tw { font-size: 17px; font-weight: 600; fill: #fff; }
+  .card svg .tws { font-size: 12px; fill: rgba(255,255,255,.78); }
+  .card svg .edge { stroke: #9198a1; stroke-width: 1.6; fill: none; }
+  .card svg .dash { stroke-dasharray: 6 5; }
+</style>
+</head>
+<body>
+<div id="shot">
+  <div class="card">
+    <div class="titleRow">
+      <div class="mark">&#955;</div>
+      <div class="name">aws-ses-relay</div>
+    </div>
+    <div class="tagline">Forward inbound email received by Amazon SES with a single Rust Lambda.</div>
+    <div class="verdict">fail-open verdict gate &middot; questionable forwards are logged, never silently lost</div>
+    <div class="diagram">
+      <svg viewBox="0 0 1120 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Forwarding pipeline">
+        <defs>
+          <marker id="mkA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#9198a1"/>
+          </marker>
+        </defs>
+
+        <rect class="box" x="2" y="40" width="128" height="64" rx="32"/>
+        <g fill="none" stroke="#9198a1" stroke-width="1.6" transform="translate(26,63)">
+          <rect x="0" y="0" width="22" height="16" rx="2.5"/>
+          <path d="M1 2.5 l10 7.5 10 -7.5"/>
+        </g>
+        <text class="t" x="56" y="77">Sender</text>
+
+        <rect class="box" x="210" y="40" width="150" height="64" rx="12"/>
+        <text class="t" x="285" y="68" text-anchor="middle">SES</text>
+        <text class="sub" x="285" y="87" text-anchor="middle">receiving</text>
+
+        <rect class="accent" x="450" y="40" width="200" height="64" rx="12"/>
+        <text x="468" y="83" font-size="26" fill="rgba(255,255,255,.85)" font-family="Georgia, serif">&#955;</text>
+        <text class="tw" x="562" y="68" text-anchor="middle">aws-ses-relay</text>
+        <text class="tws" x="562" y="88" text-anchor="middle">this Lambda &middot; Rust</text>
+
+        <rect class="box" x="740" y="40" width="150" height="64" rx="12"/>
+        <text class="t" x="815" y="68" text-anchor="middle">SES</text>
+        <text class="sub" x="815" y="87" text-anchor="middle">sending</text>
+
+        <rect class="box" x="970" y="40" width="140" height="64" rx="32"/>
+        <g fill="none" stroke="#9198a1" stroke-width="1.6" transform="translate(998,62)">
+          <path d="M0 7 L5 0 H17 L22 7 V15 A2 2 0 0 1 20 17 H2 A2 2 0 0 1 0 15 Z"/>
+          <path d="M0 7 h6 l2.5 3.5 h5 l2.5 -3.5 h6"/>
+        </g>
+        <text class="t" x="1028" y="77">Mailbox</text>
+
+        <path class="box" d="M350 158 a55 9 0 0 1 110 0 v49 a55 9 0 0 1 -110 0 z"/>
+        <path fill="none" stroke="#3d444d" stroke-width="1.5" d="M350 158 a55 9 0 0 0 110 0"/>
+        <text class="t" x="405" y="194" text-anchor="middle" font-size="13.5">S3 bucket</text>
+
+        <g class="edge" marker-end="url(#mkA)">
+          <line x1="130" y1="72" x2="204" y2="72"/>
+          <line x1="360" y1="72" x2="444" y2="72"/>
+          <line x1="650" y1="72" x2="734" y2="72"/>
+          <line x1="890" y1="72" x2="964" y2="72"/>
+          <path d="M330 104 C 340 130, 355 145, 372 154"/>
+          <path class="dash" d="M452 153 C 480 140, 500 126, 518 110"/>
+        </g>
+      </svg>
+    </div>
+    <div class="chipsRow">
+      <div class="chip">Rust</div>
+      <div class="chip">AWS Lambda &middot; ARM64</div>
+      <div class="chip">MIT</div>
+      <div class="repoUrl">github.com/JeronimoColon/aws-ses-relay</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
