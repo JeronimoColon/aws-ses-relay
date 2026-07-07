@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 240" width="1000" height="240" role="img" aria-label="How aws-ses-relay forwards mail">
+  <title>How it works</title>
+  <style>
+    svg {
+      --node-fill: #161b22; --node-stroke: #3d444d; --node-text: #e6edf3;
+      --muted: #9198a1; --edge: #9198a1;
+      --accent-fill: #1f6feb; --accent-stroke: #388bfd;
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+    .box { fill: var(--node-fill); stroke: var(--node-stroke); stroke-width: 1.25; }
+    .accent { fill: var(--accent-fill); stroke: var(--accent-stroke); stroke-width: 1.25; }
+    .t { font-size: 13px; font-weight: 600; fill: var(--node-text); }
+    .t2 { font-size: 12px; font-weight: 600; fill: var(--node-text); }
+    .sub { font-size: 10.5px; fill: var(--muted); }
+    .tw { font-size: 13px; font-weight: 600; fill: #fff; }
+    .tws { font-size: 10.5px; fill: rgba(255,255,255,.78); }
+    .lab { font-size: 10.5px; font-weight: 500; fill: var(--muted); }
+    .code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 10px; fill: var(--muted); }
+    .edge { stroke: var(--edge); stroke-width: 1.4; fill: none; }
+    .dash { stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/>
+    </marker>
+  </defs>
+
+  <rect class="box" x="16" y="42" width="104" height="56" rx="28"/>
+  <g fill="none" stroke="var(--muted)" stroke-width="1.4" transform="translate(33,63)">
+    <rect x="0" y="0" width="18" height="13" rx="2"/>
+    <path d="M1 2 l8 6 8 -6"/>
+  </g>
+  <text class="t" x="58" y="74.5">Sender</text>
+
+  <rect class="box" x="200" y="42" width="130" height="56" rx="10"/>
+  <text class="t" x="265" y="66" text-anchor="middle">SES</text>
+  <text class="sub" x="265" y="82" text-anchor="middle">receiving</text>
+
+  <rect class="accent" x="450" y="42" width="160" height="56" rx="10"/>
+  <text x="464" y="79" font-size="22" fill="rgba(255,255,255,.85)" font-family="Georgia, serif">λ</text>
+  <text class="tw" x="543" y="66" text-anchor="middle">aws-ses-relay</text>
+  <text class="tws" x="543" y="82" text-anchor="middle">this Lambda · Rust</text>
+
+  <rect class="box" x="690" y="42" width="130" height="56" rx="10"/>
+  <text class="t" x="755" y="66" text-anchor="middle">SES</text>
+  <text class="sub" x="755" y="82" text-anchor="middle">sending</text>
+
+  <rect class="box" x="884" y="42" width="100" height="56" rx="28"/>
+  <g fill="none" stroke="var(--muted)" stroke-width="1.4" transform="translate(898,63)">
+    <path d="M0 6 L4 0 H14 L18 6 V12 A1.5 1.5 0 0 1 16.5 13.5 H1.5 A1.5 1.5 0 0 1 0 12 Z"/>
+    <path d="M0 6 h5 l2 3 h4 l2 -3 h5"/>
+  </g>
+  <text class="t" x="922" y="74.5">Mailbox</text>
+
+  <path class="box" d="M337 158 a48 8 0 0 1 96 0 v48 a48 8 0 0 1 -96 0 z"/>
+  <path fill="none" stroke="var(--node-stroke)" stroke-width="1.25" d="M337 158 a48 8 0 0 0 96 0"/>
+  <text class="t2" x="385" y="192" text-anchor="middle">S3 bucket</text>
+
+  <g class="edge" marker-end="url(#arrow)">
+    <line x1="120" y1="70" x2="196" y2="70"/>
+    <line x1="330" y1="70" x2="446" y2="70"/>
+    <line x1="610" y1="70" x2="686" y2="70"/>
+    <line x1="820" y1="70" x2="880" y2="70"/>
+    <path d="M285 98 C 297 126, 320 143, 345 152"/>
+    <path class="dash" d="M425 151 C 449 137, 471 121, 490 102"/>
+  </g>
+  <text class="lab" x="158" y="61" text-anchor="middle">inbound email</text>
+  <text class="lab" x="388" y="61" text-anchor="middle">async invoke</text>
+  <text class="lab" x="648" y="61" text-anchor="middle">SendRawEmail</text>
+  <text class="code" x="648" y="85" text-anchor="middle">SESv2</text>
+  <text class="lab" x="850" y="61" text-anchor="middle">forwarded</text>
+  <text class="lab" x="298" y="133" text-anchor="end">stores raw</text>
+  <text class="code" x="478" y="141">GetObject</text>
+</svg>

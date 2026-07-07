@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant SES as SES
+    participant L as aws-ses-relay
+    participant S3 as S3
+    participant Out as SESv2
+    SES->>L: async invoke (messageId, recipients, verdicts)
+    Note over L: verdict gate + resolve destinations
+    alt dropped, or no destination matches
+        L-->>SES: Ok - zero S3 / SES calls
+    else forward
+        L->>S3: GetObject (raw message)
+        S3-->>L: raw bytes
+        Note over L: rewrite headers (byte-level)
+        opt idempotency enabled
+            L->>S3: conditional PUT marker
+        end
+        L->>Out: SendRawEmail (rewritten)
+        Out-->>L: accepted
+        L-->>SES: Ok
+    end

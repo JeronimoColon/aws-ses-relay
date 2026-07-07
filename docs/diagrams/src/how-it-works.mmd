@@ -1,0 +1,9 @@
+flowchart LR
+    S(["📧 Sender"]) -->|inbound email| SES["SES receiving"]
+    SES -->|stores raw message| S3[("S3 bucket")]
+    SES -->|async invoke| R["aws-ses-relay<br/>(this Lambda)"]
+    S3 -.->|GetObject| R
+    R -->|rewritten · SESv2 SendRawEmail| OUT["SES sending"]
+    OUT -->|forwarded| M(["📥 Your mailbox"])
+    classDef relay fill:#2563eb,stroke:#1d4ed8,color:#ffffff
+    class R relay

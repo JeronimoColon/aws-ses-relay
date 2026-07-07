@@ -25,17 +25,10 @@ into the source.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    S(["📧 Sender"]) -->|inbound email| SES["SES receiving"]
-    SES -->|stores raw message| S3[("S3 bucket")]
-    SES -->|async invoke| R["aws-ses-relay<br/>(this Lambda)"]
-    S3 -.->|GetObject| R
-    R -->|rewritten · SESv2 SendRawEmail| OUT["SES sending"]
-    OUT -->|forwarded| M(["📥 Your mailbox"])
-    classDef relay fill:#2563eb,stroke:#1d4ed8,color:#ffffff
-    class R relay
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/how-it-works-dark.svg">
+  <img src="docs/diagrams/how-it-works-light.svg" alt="SES receives inbound mail, stores the raw message in S3, and asynchronously invokes aws-ses-relay; the function reads the raw bytes from S3, rewrites the headers, and re-sends through SES to your mailbox." width="1000">
+</picture>
 
 SES will not send "from" a domain you do not control, so the function rewrites
 each message before re-sending:
@@ -68,21 +61,10 @@ passing along a questionable message. But **every questionable forward is logged
 as a `WARN`**, so the bypass is never silent and you can alarm on it. Two opt-in
 switches let you tighten the gate.
 
-```mermaid
-flowchart TD
-    A(["Message with spam and virus verdicts"]) --> V{"virus == FAIL?"}
-    V -->|yes| DV["🛑 Drop · virus"]:::drop
-    V -->|no| U{"DROP_UNSCANNED and<br/>virus == PROCESSING_FAILED?"}
-    U -->|yes| DU["🛑 Drop · unscanned"]:::drop
-    U -->|no| SP{"DROP_SPAM and<br/>spam == FAIL?"}
-    SP -->|yes| DS["🛑 Drop · spam"]:::drop
-    SP -->|no| C{"verdict concerning?<br/>(present, not PASS / DISABLED)"}
-    C -->|yes| WY["✅ Forward + ⚠️ WARN"]:::warn
-    C -->|no| WN["✅ Forward"]:::fwd
-    classDef drop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef fwd fill:#dcfce7,stroke:#16a34a,color:#14532d
-    classDef warn fill:#fef9c3,stroke:#ca8a04,color:#713f12
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/verdict-gate-dark.svg">
+  <img src="docs/diagrams/verdict-gate-light.svg" alt="Decision flow: a virus FAIL verdict is always dropped; PROCESSING_FAILED is dropped only when DROP_UNSCANNED is set; a spam FAIL is dropped only when DROP_SPAM is set; everything else is forwarded, with a WARN log when any verdict is concerning." width="680">
+</picture>
 
 | virus verdict | spam verdict | switches | result |
 |---|---|---|---|
@@ -105,29 +87,10 @@ otherwise every status is `DISABLED` and nothing is dropped.
 The function processes each event in a fixed order and does the cheap checks
 first - an unmatched or dropped message returns without ever calling S3 or SES:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant SES as SES
-    participant L as aws-ses-relay
-    participant S3 as S3
-    participant Out as SESv2
-    SES->>L: async invoke (messageId, recipients, verdicts)
-    Note over L: verdict gate + resolve destinations
-    alt dropped, or no destination matches
-        L-->>SES: Ok - zero S3 / SES calls
-    else forward
-        L->>S3: GetObject (raw message)
-        S3-->>L: raw bytes
-        Note over L: rewrite headers (byte-level)
-        opt idempotency enabled
-            L->>S3: conditional PUT marker
-        end
-        L->>Out: SendRawEmail (rewritten)
-        Out-->>L: accepted
-        L-->>SES: Ok
-    end
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/processing-sequence-dark.svg">
+  <img src="docs/diagrams/processing-sequence-light.svg" alt="Sequence: SES invokes the function asynchronously; a dropped or unmatched message returns with zero S3 and SES calls; otherwise the function reads the raw message from S3, rewrites the headers, optionally claims an idempotency marker, and sends via SESv2." width="780">
+</picture>
 
 Rust was chosen deliberately: byte-level message handling means non-UTF-8 mail
 cannot be corrupted; the header parser is linear-time, so a hostile message

@@ -1,0 +1,13 @@
+flowchart TD
+    A(["Message with spam and virus verdicts"]) --> V{"virus == FAIL?"}
+    V -->|yes| DV["🛑 Drop · virus"]:::drop
+    V -->|no| U{"DROP_UNSCANNED and<br/>virus == PROCESSING_FAILED?"}
+    U -->|yes| DU["🛑 Drop · unscanned"]:::drop
+    U -->|no| SP{"DROP_SPAM and<br/>spam == FAIL?"}
+    SP -->|yes| DS["🛑 Drop · spam"]:::drop
+    SP -->|no| C{"verdict concerning?<br/>(present, not PASS / DISABLED)"}
+    C -->|yes| WY["✅ Forward + ⚠️ WARN"]:::warn
+    C -->|no| WN["✅ Forward"]:::fwd
+    classDef drop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef fwd fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef warn fill:#fef9c3,stroke:#ca8a04,color:#713f12
