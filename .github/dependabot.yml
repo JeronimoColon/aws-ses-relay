@@ -8,6 +8,14 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: chore
+    groups:
+      # The AWS crates (SDK, smithy, lambda_runtime) only compile in lockstep;
+      # a partial bump can split shared transitive deps across two versions.
+      # One grouped PR keeps the whole family moving together.
+      aws-ecosystem:
+        patterns:
+          - "aws-*"
+          - "lambda_runtime"
 
   # Pinned GitHub Actions (keeps the SHA pins current).
   - package-ecosystem: github-actions
