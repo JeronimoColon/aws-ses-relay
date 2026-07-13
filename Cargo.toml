@@ -1,6 +1,6 @@
 [package]
 name = "aws-ses-relay"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "AWS Lambda that forwards inbound SES email to configured destinations."
@@ -16,10 +16,10 @@ codegen-units = 1
 strip = true
 
 [dependencies]
-aws-config = "1.8.18"
-aws-sdk-s3 = "1.137.0"
-aws-sdk-sesv2 = "1.123.0"
-lambda_runtime = "1.2.1"
+aws-config = "1.9.0"
+aws-sdk-s3 = "1.138.0"
+aws-sdk-sesv2 = "1.124.0"
+lambda_runtime = "1.3.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"

@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Updated the AWS SDK crate family (aws-config 1.9.0, aws-sdk-s3 1.138.0,
+  aws-sdk-sesv2 1.124.0, and their smithy dependencies) and lambda_runtime
+  (1.3.0) to current releases. The crates move in lockstep, so the update
+  lands as one set; Dependabot now groups them into a single weekly PR.
+- Replaced the README's Mermaid diagrams with hand-drawn SVGs that follow
+  GitHub's light and dark themes.
+
 ## [0.1.0] - 2026-07-06
 
 ### Added
@@ -27,4 +38,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI (build, test, clippy, format, coverage floor, dependency audit) and a
   tag-triggered release pipeline that publishes the ARM64 Lambda package.
 
+[Unreleased]: https://github.com/JeronimoColon/aws-ses-relay/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.0
