@@ -1,6 +1,6 @@
 [package]
 name = "aws-ses-relay"
-version = "0.1.1"
+version = "0.1.1-rc.3"
 edition = "2021"
 license = "MIT"
 description = "AWS Lambda that forwards inbound SES email to configured destinations."
