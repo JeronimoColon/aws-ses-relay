@@ -329,10 +329,8 @@ fn find_body_boundary(raw: &[u8]) -> Option<(usize, usize)> {
         if raw[line_start] == b'\r' && raw.get(line_start + 1) == Some(&b'\n') {
             return Some((line_start, line_start + 2));
         }
-        match next_newline(raw, line_start) {
-            Some(newline_index) => line_start = newline_index + 1,
-            None => return None,
-        }
+        let newline_index = next_newline(raw, line_start)?;
+        line_start = newline_index + 1;
     }
     None
 }
