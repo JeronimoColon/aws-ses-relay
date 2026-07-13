@@ -20,6 +20,18 @@ jobs:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # The binary logs CARGO_PKG_VERSION at cold start, so the manifest is the
+      # release identity. Refuse to build a tag that disagrees with it.
+      - name: Gate - the tag must match the crate version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          manifest_version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "v${manifest_version}" != "$TAG" ]; then
+            echo "tag $TAG does not match Cargo.toml version ${manifest_version}" >&2
+            exit 1
+          fi
+
       - name: Install Rust (stable) with the Lambda target
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master, pinned
         with:
