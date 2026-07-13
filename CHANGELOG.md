@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The function logs its crate version as the first line of every cold start,
+  so a deployed code swap is verifiable from CloudWatch alone.
+
 ### Changed
 
 - Updated the AWS SDK crate family (aws-config 1.9.0, aws-sdk-s3 1.138.0,

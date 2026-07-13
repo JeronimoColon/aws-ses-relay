@@ -18,6 +18,13 @@ use crate::idempotency::S3IdempotencyStore;
 async fn main() -> Result<(), Error> {
     init_tracing();
 
+    // First line of every cold start: which build is running. Deploy swaps are
+    // then verifiable from CloudWatch alone, without comparing code hashes.
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "aws-ses-relay starting"
+    );
+
     // Load and validate configuration once. A configuration problem should fail
     // the cold start loudly rather than surface per-invocation.
     let config = Config::from_process_env().map_err(|error| {
