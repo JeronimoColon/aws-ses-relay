@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-07-26
+
+### Changed
+
+- Updated dependencies to current releases: aws-sdk-s3 1.138.1, tokio 1.53.0,
+  serde 1.0.229, thiserror 2.0.19, and refreshed two pinned CI action SHAs
+  (dtolnay/rust-toolchain, taiki-e/install-action 2.83.4).
+- Moved the transitive `spin` crate off the yanked 0.10.0 to 0.10.1 (pulled in
+  via aws-sdk-s3 -> aws-smithy-checksums -> crc-fast), clearing the yanked-crate
+  warning from cargo audit and cargo deny.
+
 ## [0.1.1] - 2026-07-13
 
 ### Added
@@ -43,5 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI (build, test, clippy, format, coverage floor, dependency audit) and a
   tag-triggered release pipeline that publishes the ARM64 Lambda package.
 
+[0.1.2]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.2
 [0.1.1]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.1
 [0.1.0]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.0
