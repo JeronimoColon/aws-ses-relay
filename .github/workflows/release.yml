@@ -47,7 +47,7 @@ jobs:
       # `--break-system-packages` satisfies PEP 668 on the runner's externally
       # managed Python. Pinned versions; bump as needed.
       - name: Install cargo-lambda and Zig
-        run: pip3 install --break-system-packages 'cargo-lambda==1.9.1' 'ziglang==0.14.0'
+        run: pip3 install --break-system-packages 'cargo-lambda==1.9.2' 'ziglang==0.14.0'
 
       # ARM64 (Graviton) is the project's documented target. To also ship an
       # x86_64 artifact, add a second `cargo lambda build --release` (its default
