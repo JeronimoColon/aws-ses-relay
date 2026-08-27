@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-08-26
+
+### Changed
+
+- Updated dependencies to current releases: thiserror 2.0.20, plus the
+  test-only http 1.5.0 and aws-smithy-types 1.6.2.
+- Updated the transitive h2 0.4 line to 0.4.19, fixing RUSTSEC-2026-0258
+  (unbounded empty DATA frames) in the HTTP/2 stack the function actually
+  uses. The legacy h2 0.3.27, part of the AWS SDK's dormant hyper-rustls 0.24
+  chain that is never constructed at runtime and has no fixed 0.3.x release,
+  is documented as an accepted risk alongside the existing rustls-webpki
+  advisories (see SECURITY.md).
+- Bumped cargo-lambda to 1.9.2 in CI and the release pipeline so ARM64
+  cross-compiles work on Rust 1.98, and refreshed pinned CI actions
+  (Swatinem/rust-cache 2.9.2, dtolnay/rust-toolchain,
+  taiki-e/install-action 2.86.7).
+
 ## [0.1.3] - 2026-07-27
 
 ### Changed
