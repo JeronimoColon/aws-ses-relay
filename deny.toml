@@ -29,14 +29,19 @@ name = "r-efi"
 allow = ["LGPL-2.1-or-later"]
 
 [advisories]
-# Accepted-risk advisories, kept in sync with .cargo/audit.toml. All three are in
-# rustls-webpki 0.101.7 (transitive via the AWS SDK's HTTP layer). The affected
-# code is server-side certificate handling; this Lambda is a TLS client, so it is
-# not exercised. No upstream fix exists yet; remove when the SDK drops rustls 0.21.
+# Accepted-risk advisories, kept in sync with .cargo/audit.toml (the full
+# rationale lives there). The three rustls-webpki IDs are in rustls-webpki
+# 0.101.7 (transitive via the AWS SDK's legacy HTTP chain); the affected code is
+# server-side certificate handling and this Lambda is a TLS client, so it is not
+# exercised. RUSTSEC-2026-0258 covers h2 0.3.27 in that same legacy chain, which
+# is never constructed at runtime; the reachable h2 0.4 line is fixed in
+# Cargo.lock at >= 0.4.16. No upstream fix exists for the legacy chain yet;
+# remove all four when the SDK drops rustls 0.21.
 ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0258",
 ]
 
 [bans]

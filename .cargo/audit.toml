@@ -5,21 +5,32 @@
 # crate still fails the audit. Revisit whenever the AWS SDK dependency tree
 # changes.
 #
-# All three IDs below are the same transitive crate: rustls-webpki 0.101.7. It is
-# pulled in by aws-smithy-http-client (the AWS SDK's HTTP layer) through its
-# dependency on the old hyper-rustls 0.24 -> rustls 0.21. As of this writing,
-# aws-smithy-http-client 1.1.13 is the latest published version and still pins
-# that chain, so the advisory cannot be resolved by a version bump today.
+# The three rustls-webpki IDs below are the same transitive crate: rustls-webpki
+# 0.101.7. It is pulled in by aws-smithy-http-client (the AWS SDK's HTTP layer)
+# through its dependency on the old hyper-rustls 0.24 -> rustls 0.21. As of this
+# writing, aws-smithy-http-client 1.2.0 is the latest published version and still
+# pins that chain, so the advisory cannot be resolved by a version bump today.
 #
 # The affected code is rustls-webpki's SERVER-side certificate handling
 # (certificate-revocation-list parsing and name-constraint checks). This Lambda
 # is a TLS *client* connecting to AWS endpoints, so that server-side path is not
 # exercised at runtime. Remove these ignores once the AWS SDK ships an HTTP layer
 # that drops rustls 0.21 / hyper-rustls 0.24.
+#
+# RUSTSEC-2026-0258 (h2: unbounded empty DATA frames) matches two locked h2
+# versions. The reachable one, h2 0.4.x (used by the SDK's current hyper 1.x
+# stack), is FIXED in Cargo.lock at >= 0.4.16, so in practice this ignore covers
+# only h2 0.3.27, which has no fixed 0.3.x release and lives in the same legacy
+# hyper-rustls 0.24 chain as the rustls-webpki entries above. The legacy stack is
+# compiled in but never constructed at runtime (BehaviorVersion::latest() in
+# src/main.rs selects the hyper 1.x stack), so the vulnerable code is not
+# exercised. Remove alongside the entries above when the SDK drops the legacy
+# chain.
 
 [advisories]
 ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki: name constraints for URI names incorrectly accepted (server-side)
     "RUSTSEC-2026-0099", # rustls-webpki: name constraints accepted for wildcard-name certs (server-side)
     "RUSTSEC-2026-0104", # rustls-webpki: reachable panic in certificate-revocation-list parsing (server-side)
+    "RUSTSEC-2026-0258", # h2 0.3.27: unbounded empty DATA frames (legacy chain, unreachable; the 0.4 line is fixed)
 ]

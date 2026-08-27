@@ -33,3 +33,11 @@ Currently ignored:
   a TLS **client** connecting to AWS endpoints, so that path is not exercised.
   These ignores will be removed once the AWS SDK ships an HTTP layer that drops
   the old `rustls` line.
+- **RUSTSEC-2026-0258** - `h2 0.3.27`, part of that same legacy
+  `hyper-rustls 0.24` → `rustls 0.21` chain inside the AWS SDK's HTTP layer.
+  The HTTP/2 implementation the relay actually uses is the `h2 0.4` line (the
+  SDK's `hyper 1.x` stack), which `Cargo.lock` holds at a fixed version
+  (>= 0.4.16); the legacy stack is compiled in but never constructed at
+  runtime, so the vulnerable code is not exercised. This ignore will be
+  removed together with the `rustls-webpki` entries above when the SDK drops
+  the legacy chain.
