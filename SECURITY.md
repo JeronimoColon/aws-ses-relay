@@ -41,3 +41,13 @@ Currently ignored:
   runtime, so the vulnerable code is not exercised. This ignore will be
   removed together with the `rustls-webpki` entries above when the SDK drops
   the legacy chain.
+- **RUSTSEC-2026-0346, RUSTSEC-2026-0349** - `rustls 0.21.12`, the `rustls` in
+  that same legacy chain, which has no fixed 0.21.x release. The `rustls` the
+  relay actually uses is the 0.23 line (the SDK's `hyper 1.x` stack), which
+  `Cargo.lock` holds at a fixed version (>= 0.23.46). Beyond the legacy stack
+  never being constructed, neither advisory applies to 0.21 in practice:
+  RUSTSEC-2026-0346 needs a custom TLS session store that logs session values
+  (this relay has none), and RUSTSEC-2026-0349 is a downgrade away from
+  post-quantum key exchange, which `rustls 0.21` never supported. These ignores
+  will be removed together with the entries above when the SDK drops the
+  legacy chain.
