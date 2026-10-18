@@ -35,13 +35,17 @@ allow = ["LGPL-2.1-or-later"]
 # server-side certificate handling and this Lambda is a TLS client, so it is not
 # exercised. RUSTSEC-2026-0258 covers h2 0.3.27 in that same legacy chain, which
 # is never constructed at runtime; the reachable h2 0.4 line is fixed in
-# Cargo.lock at >= 0.4.16. No upstream fix exists for the legacy chain yet;
-# remove all four when the SDK drops rustls 0.21.
+# Cargo.lock at >= 0.4.16. RUSTSEC-2026-0346 and RUSTSEC-2026-0349 cover
+# rustls 0.21.12 in that same legacy chain; the reachable rustls 0.23 line is
+# fixed in Cargo.lock at >= 0.23.46. No upstream fix exists for the legacy
+# chain yet; remove all six when the SDK drops rustls 0.21.
 ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
     "RUSTSEC-2026-0258",
+    "RUSTSEC-2026-0346",
+    "RUSTSEC-2026-0349",
 ]
 
 [bans]

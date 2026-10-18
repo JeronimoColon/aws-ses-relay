@@ -26,6 +26,14 @@
 # src/main.rs selects the hyper 1.x stack), so the vulnerable code is not
 # exercised. Remove alongside the entries above when the SDK drops the legacy
 # chain.
+#
+# RUSTSEC-2026-0346 and RUSTSEC-2026-0349 (rustls) match both locked rustls
+# versions. The reachable 0.23 line is FIXED in Cargo.lock at >= 0.23.46. The
+# ignores cover only rustls 0.21.12, the same never-constructed legacy chain,
+# where 0.21 has no fixed release. Neither is reachable there anyway: 0346
+# needs a custom ClientSessionStore that Debug-formats session values (this
+# crate has none), and 0349 is a downgrade from post-quantum key exchange,
+# which rustls 0.21 never supported. Remove alongside the entries above.
 
 [advisories]
 ignore = [
@@ -33,4 +41,6 @@ ignore = [
     "RUSTSEC-2026-0099", # rustls-webpki: name constraints accepted for wildcard-name certs (server-side)
     "RUSTSEC-2026-0104", # rustls-webpki: reachable panic in certificate-revocation-list parsing (server-side)
     "RUSTSEC-2026-0258", # h2 0.3.27: unbounded empty DATA frames (legacy chain, unreachable; the 0.4 line is fixed)
+    "RUSTSEC-2026-0346", # rustls 0.21.12: Debug impls expose session secrets (legacy chain, unreachable; the 0.23 line is fixed)
+    "RUSTSEC-2026-0349", # rustls 0.21.12: key-share prediction downgrade (legacy chain, unreachable; the 0.23 line is fixed)
 ]
