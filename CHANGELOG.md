@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-10-18
+
+### Changed
+
+- Updated dependencies to current releases: lambda_runtime 1.4.0, tokio
+  1.53.3, serde_json 1.0.154, and thiserror 2.0.21, plus the AWS smithy
+  runtime crates that move with them (aws-smithy-runtime 1.14.0,
+  aws-smithy-types 1.6.3).
+- Updated the transitive rustls 0.23 line to 0.23.46, fixing RUSTSEC-2026-0285,
+  RUSTSEC-2026-0346, RUSTSEC-2026-0348, and RUSTSEC-2026-0349 in the TLS stack
+  the function actually uses. RUSTSEC-2026-0346 and RUSTSEC-2026-0349 also
+  match the legacy rustls 0.21.12 in the AWS SDK's dormant hyper-rustls 0.24
+  chain, which is never constructed at runtime and has no fixed 0.21.x
+  release; both are documented as accepted risk alongside the existing
+  legacy-chain advisories (see SECURITY.md).
+- Refreshed pinned CI actions (dtolnay/rust-toolchain,
+  taiki-e/install-action 2.87.28).
+
 ## [0.1.4] - 2026-08-26
 
 ### Changed
