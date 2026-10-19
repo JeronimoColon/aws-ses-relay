@@ -1,6 +1,17 @@
 //! Lambda bootstrap: initialize logging, load configuration and build the AWS
 //! clients once at cold start, then serve invocations.
 
+// Lambda builds link through Zig (via cargo-lambda), which ignores the -Wl,-O1
+// that rustc passes to the linker for optimized builds and says so on stderr,
+// so every release build reports it as a linker_messages warning. The flag has
+// no effect on the binary. Allowed only for aarch64 Linux so native builds still
+// surface real linker messages. Remove once cargo-lambda ships a cargo-zigbuild
+// that filters the flag (rust-cross/cargo-zigbuild#486).
+#![cfg_attr(
+    all(target_arch = "aarch64", target_os = "linux"),
+    allow(linker_messages)
+)]
+
 mod config;
 mod event;
 mod forward;
