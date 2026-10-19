@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-10-18
+
+### Changed
+
+- Updated the AWS SDK crates together to current releases: aws-config 1.12.0,
+  aws-sdk-s3 1.152.0, and aws-sdk-sesv2 1.140.1, plus the AWS smithy runtime
+  crates that move with them (aws-smithy-runtime 1.16.0, aws-smithy-types
+  1.8.1).
+- The newer aws-sdk-s3 moves its cache dependency, lru, to 0.18.5, fixing
+  RUSTSEC-2026-0253 (a possible use-after-free in LruCache::pop when a cached
+  key's destructor panics).
+
 ## [0.1.5] - 2026-10-18
 
 ### Changed
@@ -98,6 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI (build, test, clippy, format, coverage floor, dependency audit) and a
   tag-triggered release pipeline that publishes the ARM64 Lambda package.
 
+[0.1.6]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.6
+[0.1.5]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.5
+[0.1.4]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.4
 [0.1.3]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.3
 [0.1.2]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.2
 [0.1.1]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.1
