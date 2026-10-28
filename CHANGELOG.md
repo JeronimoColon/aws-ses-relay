@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-10-28
+
+### Security
+
+- Fixed RUSTSEC-2026-0382 (rustls-webpki could accept certificate chains
+  through distrusted emSign intermediates) by updating rustls-webpki to
+  0.103.16.
+- Fixed RUSTSEC-2026-0385 (ctutils) by updating to 0.4.6, and
+  RUSTSEC-2026-0387 (crypto-bigint timing) by moving the AWS crates to current
+  releases, which brings crypto-bigint 0.7.10.
+
+### Changed
+
+- AWS SDK: aws-config 1.13.0, aws-sdk-s3 1.156.0, aws-sdk-sesv2 1.144.0,
+  lambda_runtime 1.5.0. aws-sdk-s3 and aws-sdk-sesv2 no longer enable the
+  `rustls` feature, which removes the SDK's unused legacy TLS stack (rustls
+  0.21, hyper 0.14) from the build; no advisories are ignored any more.
+- tokio 1.54.1.
+- Silenced a harmless linker notice from Zig in ARM64 release builds.
+- Refreshed pinned CI actions (Swatinem/rust-cache 2.9.3,
+  taiki-e/install-action 2.87.31).
+
 ## [0.1.6] - 2026-10-18
 
 ### Changed
@@ -110,6 +132,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI (build, test, clippy, format, coverage floor, dependency audit) and a
   tag-triggered release pipeline that publishes the ARM64 Lambda package.
 
+[0.1.7]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.7
 [0.1.6]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.6
 [0.1.5]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.5
 [0.1.4]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.4
