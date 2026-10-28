@@ -23,31 +23,6 @@ explicitly listed, with rationale, in [`.cargo/audit.toml`](.cargo/audit.toml).
 The ignores are per-advisory-ID, so a new or different advisory still fails the
 build.
 
-Currently ignored:
-
-- **RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104** - all in
-  `rustls-webpki 0.101.7`, a transitive dependency of the AWS SDK's HTTP layer
-  (`aws-smithy-http-client`, whose latest published release still pins the old
-  `hyper-rustls 0.24` → `rustls 0.21` → `rustls-webpki 0.101.7`). The affected
-  code is `rustls-webpki`'s **server-side** certificate handling; this Lambda is
-  a TLS **client** connecting to AWS endpoints, so that path is not exercised.
-  These ignores will be removed once the AWS SDK ships an HTTP layer that drops
-  the old `rustls` line.
-- **RUSTSEC-2026-0258** - `h2 0.3.27`, part of that same legacy
-  `hyper-rustls 0.24` → `rustls 0.21` chain inside the AWS SDK's HTTP layer.
-  The HTTP/2 implementation the relay actually uses is the `h2 0.4` line (the
-  SDK's `hyper 1.x` stack), which `Cargo.lock` holds at a fixed version
-  (>= 0.4.16); the legacy stack is compiled in but never constructed at
-  runtime, so the vulnerable code is not exercised. This ignore will be
-  removed together with the `rustls-webpki` entries above when the SDK drops
-  the legacy chain.
-- **RUSTSEC-2026-0346, RUSTSEC-2026-0349** - `rustls 0.21.12`, the `rustls` in
-  that same legacy chain, which has no fixed 0.21.x release. The `rustls` the
-  relay actually uses is the 0.23 line (the SDK's `hyper 1.x` stack), which
-  `Cargo.lock` holds at a fixed version (>= 0.23.46). Beyond the legacy stack
-  never being constructed, neither advisory applies to 0.21 in practice:
-  RUSTSEC-2026-0346 needs a custom TLS session store that logs session values
-  (this relay has none), and RUSTSEC-2026-0349 is a downgrade away from
-  post-quantum key exchange, which `rustls 0.21` never supported. These ignores
-  will be removed together with the entries above when the SDK drops the
-  legacy chain.
+Currently ignored: none. The AWS SDK's legacy `hyper-rustls 0.24` /
+`rustls 0.21` chain, the source of every earlier ignore, is no longer part of
+the build.
