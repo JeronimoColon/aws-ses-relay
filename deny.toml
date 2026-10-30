@@ -1,8 +1,8 @@
 # cargo-deny configuration. Run: cargo deny check
 #
 # Supply-chain policy for the dependency tree: permissive licenses only,
-# crates.io as the only source, and the same accepted-risk advisories that
-# .cargo/audit.toml documents.
+# crates.io as the only source, the same accepted-risk advisories that
+# .cargo/audit.toml documents, and a ban on the AWS SDK's legacy TLS stack.
 
 [licenses]
 # Every crate in the tree resolves to one of these permissive licenses.
@@ -37,6 +37,19 @@ ignore = []
 # The AWS SDK pulls in a few duplicate crate majors (e.g. two http lines); they
 # coexist without conflict, so duplicates are allowed rather than failing the build.
 multiple-versions = "allow"
+
+# The AWS SDK's legacy hyper 0.14 / rustls 0.21 stack is kept out of the build
+# by the feature list in Cargo.toml. These bans fail the build if anything
+# brings it back, so its removal does not depend on a new advisory appearing.
+# Use the name + version form: cargo-deny does not read `crate@<range>` as a
+# version range.
+deny = [
+    { name = "hyper", version = "<1", reason = "legacy AWS SDK HTTP stack" },
+    { name = "hyper-rustls", version = "<0.27", reason = "legacy AWS SDK TLS stack" },
+    { name = "rustls", version = "<0.23", reason = "legacy AWS SDK TLS stack" },
+    { name = "rustls-webpki", version = "<0.102", reason = "legacy AWS SDK TLS stack" },
+    { name = "h2", version = "<0.4", reason = "legacy AWS SDK HTTP stack" },
+]
 
 [sources]
 unknown-registry = "deny"
