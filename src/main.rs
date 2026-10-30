@@ -4,11 +4,17 @@
 // Lambda builds link through Zig (via cargo-lambda), which ignores the -Wl,-O1
 // that rustc passes to the linker for optimized builds and says so on stderr,
 // so every release build reports it as a linker_messages warning. The flag has
-// no effect on the binary. Allowed only for aarch64 Linux so native builds still
-// surface real linker messages. Remove once cargo-lambda ships a cargo-zigbuild
-// that filters the flag (rust-cross/cargo-zigbuild#486).
+// no effect on the binary.
+//
+// The allow covers the whole aarch64-unknown-linux-gnu target, so it hides every
+// linker message for that target: the Lambda build, and also a native build on
+// an ARM Linux machine. Builds for any other target keep the lint. A narrower
+// scope is not available: `expect` cannot see linker messages, and setting
+// RUSTFLAGS or target rustflags would replace cargo-lambda's own -C target-cpu.
+// Remove once cargo-lambda ships a cargo-zigbuild that filters the flag
+// (rust-cross/cargo-zigbuild#486, released in cargo-zigbuild 0.24.0).
 #![cfg_attr(
-    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "linux", target_env = "gnu"),
     allow(linker_messages)
 )]
 
