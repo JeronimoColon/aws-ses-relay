@@ -125,3 +125,10 @@ jobs:
       # as the only source, no banned crates, and the accepted-risk advisories.
       - name: cargo deny check
         run: cargo deny check
+
+      # aws-sdk-s3 and aws-sdk-sesv2 list their default features by hand (minus
+      # `rustls`, which pulls in the SDK's legacy TLS stack). Fail if that copy
+      # drifts from the crates' real defaults, so new defaults are adopted on
+      # purpose rather than silently missed.
+      - name: SDK feature pin matches the SDK defaults
+        run: .github/scripts/check-sdk-feature-pin.sh
