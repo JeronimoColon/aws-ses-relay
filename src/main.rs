@@ -51,9 +51,7 @@ async fn main() -> Result<(), Error> {
 
     // Build the AWS clients once; they are reused across warm invocations. One
     // S3 client backs both the message store and the (opt-in) idempotency store.
-    let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .load()
-        .await;
+    let aws_config = aws_config_loader().load().await;
     let s3_client = aws_sdk_s3::Client::new(&aws_config);
     let store = S3MessageStore::new(s3_client.clone());
     let idempotency = S3IdempotencyStore::new(s3_client, config.idempotency_bucket.clone());
@@ -76,6 +74,12 @@ async fn main() -> Result<(), Error> {
             })
     }))
     .await
+}
+
+/// The shared AWS configuration the S3 and SES clients are built from. The SDK
+/// attaches its HTTPS client here, through the `default-https-client` feature.
+fn aws_config_loader() -> aws_config::ConfigLoader {
+    aws_config::defaults(aws_config::BehaviorVersion::latest())
 }
 
 /// Join an error with its `source()` chain into a single `a: b: c` string.
@@ -101,4 +105,85 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use aws_config::retry::RetryConfig;
+    use aws_config::Region;
+    use aws_sdk_s3::config::Credentials;
+    use aws_sdk_s3::error::SdkError;
+
+    use super::aws_config_loader;
+
+    /// A local port nothing listens on, so a request ends in a refused
+    /// connection and never reaches the network.
+    const CLOSED_LOCAL_ENDPOINT: &str = "http://127.0.0.1:1";
+
+    /// The production configuration, pointed at the closed local port, with
+    /// fixed test credentials and no retries.
+    async fn production_config_aimed_at_a_closed_port() -> aws_config::SdkConfig {
+        let test_credentials = Credentials::new(
+            "test-access-key-id",
+            "test-secret-access-key",
+            None,
+            None,
+            "test",
+        );
+        aws_config_loader()
+            .region(Region::new("us-east-1"))
+            .credentials_provider(test_credentials)
+            .retry_config(RetryConfig::disabled())
+            .endpoint_url(CLOSED_LOCAL_ENDPOINT)
+            .load()
+            .await
+    }
+
+    /// A refused connection proves a real HTTP client tried to connect. Without
+    /// one, the SDK also reports a dispatch failure, but as "No HTTP client was
+    /// available", which is not an I/O failure.
+    fn assert_real_connection_was_attempted<E: Debug, R: Debug>(error: &SdkError<E, R>) {
+        match error {
+            SdkError::DispatchFailure(failure) => assert!(
+                failure.is_io(),
+                "expected an I/O failure from a real connection attempt, got: {failure:?}"
+            ),
+            other => panic!("expected a dispatch failure, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn s3_client_from_the_production_config_attempts_a_real_connection() {
+        let shared_config = production_config_aimed_at_a_closed_port().await;
+        let s3_config = aws_sdk_s3::config::Builder::from(&shared_config)
+            .force_path_style(true)
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(s3_config);
+
+        let error = client
+            .get_object()
+            .bucket("test-bucket")
+            .key("test-key")
+            .send()
+            .await
+            .expect_err("nothing listens on the closed local port");
+
+        assert_real_connection_was_attempted(&error);
+    }
+
+    #[tokio::test]
+    async fn ses_client_from_the_production_config_attempts_a_real_connection() {
+        let shared_config = production_config_aimed_at_a_closed_port().await;
+        let client = aws_sdk_sesv2::Client::new(&shared_config);
+
+        let error = client
+            .get_account()
+            .send()
+            .await
+            .expect_err("nothing listens on the closed local port");
+
+        assert_real_connection_was_attempted(&error);
+    }
 }
