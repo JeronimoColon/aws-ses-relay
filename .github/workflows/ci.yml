@@ -34,7 +34,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy (warnings are errors)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --locked --verbose
@@ -48,8 +48,20 @@ jobs:
       - name: Install cargo-lambda and Zig
         run: pip3 install --break-system-packages 'cargo-lambda==1.9.2' 'ziglang==0.14.0'
 
+      # Zero warnings is a release gate, but cargo-lambda cannot take -D warnings:
+      # RUSTFLAGS would replace its own -C target-cpu. So the step fails if the
+      # build prints any warning. `shell: bash` adds pipefail, so a failed build
+      # is not hidden by tee, and color is off so the warning lines match.
       - name: Cross-compile for Lambda (ARM64) - proves it builds for the runtime
-        run: cargo lambda build --release --arm64
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          cargo lambda build --release --arm64 --locked 2>&1 | tee lambda-build.log
+          if grep -qE '^warning(\[|:)' lambda-build.log; then
+            echo "::error::the Lambda build printed warnings (see above)"
+            exit 1
+          fi
 
   coverage:
     name: Test coverage gate

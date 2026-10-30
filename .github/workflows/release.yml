@@ -52,8 +52,20 @@ jobs:
       # ARM64 (Graviton) is the project's documented target. To also ship an
       # x86_64 artifact, add a second `cargo lambda build --release` (its default
       # target), zip that bootstrap, and upload it alongside the arm64 zip below.
+      # Zero warnings is a release gate, but cargo-lambda cannot take -D warnings:
+      # RUSTFLAGS would replace its own -C target-cpu. So the step fails if the
+      # build prints any warning. `shell: bash` adds pipefail, so a failed build
+      # is not hidden by tee, and color is off so the warning lines match.
       - name: Cross-compile the release binary (ARM64)
-        run: cargo lambda build --release --arm64 --locked
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          cargo lambda build --release --arm64 --locked 2>&1 | tee lambda-build.log
+          if grep -qE '^warning(\[|:)' lambda-build.log; then
+            echo "::error::the Lambda build printed warnings (see above)"
+            exit 1
+          fi
 
       - name: Package the deployment zip and checksum
         run: |
