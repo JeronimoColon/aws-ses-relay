@@ -10,18 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Fixed RUSTSEC-2026-0382 (rustls-webpki could accept certificate chains
-  through distrusted emSign intermediates) by updating rustls-webpki to
-  0.103.16.
+  through distrusted emSign intermediates) in the TLS stack the function uses
+  at runtime, by updating rustls-webpki to 0.103.16.
 - Fixed RUSTSEC-2026-0385 (ctutils) by updating to 0.4.6, and
   RUSTSEC-2026-0387 (crypto-bigint timing) by moving the AWS crates to current
   releases, which brings crypto-bigint 0.7.10.
 
 ### Changed
 
-- AWS SDK: aws-config 1.13.0, aws-sdk-s3 1.156.0, aws-sdk-sesv2 1.144.0,
-  lambda_runtime 1.5.0. aws-sdk-s3 and aws-sdk-sesv2 no longer enable the
-  `rustls` feature, which removes the SDK's unused legacy TLS stack (rustls
-  0.21, hyper 0.14) from the build; no advisories are ignored any more.
+- AWS SDK: aws-config 1.13.0, aws-sdk-s3 1.156.0, and aws-sdk-sesv2 1.144.0,
+  plus the AWS smithy runtime crates that move with them (aws-smithy-runtime
+  1.16.2, aws-smithy-types 1.9.1). aws-sdk-s3 and aws-sdk-sesv2 no longer
+  enable the `rustls` feature, which removes the SDK's unused legacy TLS stack
+  (rustls 0.21, hyper 0.14) from the build; no advisories are ignored any more.
+- lambda_runtime 1.5.0.
 - tokio 1.54.1.
 - Silenced a harmless linker notice from Zig in ARM64 release builds.
 - Refreshed pinned CI actions (Swatinem/rust-cache 2.9.3,

@@ -25,4 +25,5 @@ build.
 
 Currently ignored: none. The AWS SDK's legacy `hyper-rustls 0.24` /
 `rustls 0.21` chain, the source of every earlier ignore, is no longer part of
-the build.
+the build. The ignores accepted before 0.1.7, and the reasoning for each, are
+in [SECURITY.md as of v0.1.6](https://github.com/JeronimoColon/aws-ses-relay/blob/v0.1.6/SECURITY.md).
