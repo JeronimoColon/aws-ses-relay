@@ -16,20 +16,28 @@ codegen-units = 1
 strip = true
 
 [dependencies]
-aws-config = "1.13.0"
-# Every default feature except `rustls`, which pulls in the SDK's legacy
-# hyper-rustls 0.24 / rustls 0.21 stack. The relay uses the hyper 1.x / rustls
-# 0.23 client from `default-https-client`, so the legacy stack only carried
-# advisories. Return to plain version strings once the SDK drops it from its
-# defaults (smithy-lang/smithy-rs#4651).
+# The AWS crates below turn off their default features and list the defaults
+# the relay uses. Left out on purpose:
+# - `rustls` (aws-sdk-s3, aws-sdk-sesv2) pulls in the SDK's legacy hyper-rustls
+#   0.24 / rustls 0.21 stack; the relay uses the hyper 1.x / rustls 0.23 client
+#   from `default-https-client`. It can come back once the SDK drops the legacy
+#   stack from its defaults (smithy-lang/smithy-rs#4651).
+# - `sigv4a` (aws-sdk-s3, aws-sdk-sesv2) is SigV4a signing, used only for S3
+#   multi-region access points. SES writes inbound mail to a plain bucket.
+# - `sso` and `credentials-process` (aws-config) are sign-in methods for
+#   developer machines. On Lambda, credentials come from the execution role.
+# .github/scripts/check-sdk-feature-pin.sh fails if these lists drift from the
+# crates' current defaults.
+aws-config = { version = "1.13.0", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
 aws-sdk-s3 = { version = "1.156.0", default-features = false, features = [
-    "sigv4a",
     "http-1x",
     "default-https-client",
     "rt-tokio",
 ] }
 aws-sdk-sesv2 = { version = "1.144.0", default-features = false, features = [
-    "sigv4a",
     "default-https-client",
     "rt-tokio",
 ] }
