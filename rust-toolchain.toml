@@ -2,7 +2,7 @@
 # Dependabot opens a pull request when a new Rust release is available, so moving
 # to it is a deliberate merge rather than something the runners do on their own.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 profile = "minimal"
 components = ["clippy", "rustfmt", "llvm-tools-preview"]
 targets = ["aarch64-unknown-linux-gnu"]
