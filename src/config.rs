@@ -543,6 +543,20 @@ mod tests {
     }
 
     #[test]
+    fn destination_value_that_is_not_an_array_errors() {
+        let mut environment = valid_vars();
+        environment.insert(
+            "FORWARD_MAPPING".to_string(),
+            r#"{"info@example.com":"dest@example.net"}"#.to_string(),
+        );
+        let error = Config::from_env(&environment).expect_err("destination value is a string");
+        assert!(error.problems.iter().any(|problem| {
+            problem.contains("info@example.com")
+                && problem.contains("must map to a non-empty array")
+        }));
+    }
+
+    #[test]
     fn non_string_value_errors() {
         let mut environment = valid_vars();
         environment.insert(
@@ -670,5 +684,15 @@ mod tests {
             .problems
             .iter()
             .any(|p| p.contains("valid email address")));
+    }
+
+    #[test]
+    fn from_email_with_angle_brackets_is_rejected() {
+        let mut environment = valid_vars();
+        environment.insert("FROM_EMAIL".to_string(), "<relay@example.com>".to_string());
+        let error = Config::from_env(&environment).expect_err("angle brackets in FROM_EMAIL");
+        assert!(error.problems.iter().any(|problem| {
+            problem.contains("FROM_EMAIL") && problem.contains("without angle brackets")
+        }));
     }
 }
