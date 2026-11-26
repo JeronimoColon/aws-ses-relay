@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "aws-ses-relay"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",

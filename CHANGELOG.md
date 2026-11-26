@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-11-26
+
+### Security
+
+- Fixed RUSTSEC-2026-0592 (a stack overflow in `Url::origin()` on nested
+  `blob:` URLs) by updating url to 2.5.9. The AWS SDK uses url, but neither
+  the SDK nor the function calls `Url::origin()`, so this update is a
+  precaution that keeps the dependency audit clean.
+
+### Changed
+
+- AWS SDK: aws-config 1.13.4, aws-sdk-s3 1.162.0, and aws-sdk-sesv2 1.150.0
+  (now also the minimum versions in Cargo.toml), plus the AWS smithy runtime
+  crates that move with them (aws-smithy-runtime 1.16.4, aws-smithy-types
+  1.9.5, aws-sigv4 1.6.6).
+- Removed AWS SDK features the function never uses: SigV4a signing, which only
+  S3 multi-region access points need, and the SSO and credential-process
+  sign-in methods, which are for developer machines (on Lambda, credentials
+  come from the execution role). The ARM64 binary drops from 9.67 MB to
+  8.89 MB.
+- Built with Rust 1.100.0. The toolchain is now pinned in
+  `rust-toolchain.toml`, so local, CI, and release builds use the same
+  compiler, and Dependabot proposes each new Rust release as a pull request.
+- CI now fails the ARM64 build on any compiler or linker warning, builds with
+  `--locked`, bans the AWS SDK's old TLS crates in cargo-deny, and checks that
+  the AWS crate feature lists in Cargo.toml still match the crates' defaults.
+- Refreshed the pinned taiki-e/install-action to 2.90.6.
+
 ## [0.1.7] - 2026-10-28
 
 ### Security
@@ -134,6 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI (build, test, clippy, format, coverage floor, dependency audit) and a
   tag-triggered release pipeline that publishes the ARM64 Lambda package.
 
+[0.1.8]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.8
 [0.1.7]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.7
 [0.1.6]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.6
 [0.1.5]: https://github.com/JeronimoColon/aws-ses-relay/releases/tag/v0.1.5
